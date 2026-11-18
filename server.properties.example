@@ -1,0 +1,11 @@
+server-ip=127.0.0.1
+server-port=25567
+level-name=agent-test-world
+level-seed=
+gamemode=survival
+difficulty=hard
+online-mode=false
+enable-rcon=false
+enable-query=false
+view-distance=10
+simulation-distance=8

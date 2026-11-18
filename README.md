@@ -1,0 +1,41 @@
+# Minecraft Java 26.1 生存 Agent
+
+在随机世界中运行的 Minecraft Bot。它会收集材料、寻路采矿、制作装备、处理饥饿和威胁。可选 DeepSeek 高层决策，具体采集、移动和战斗由本地执行器处理。
+
+项目还包含 Fabric 原生旁观 Mod、原版服务器遥测数据包，以及本地 Token 用量和路径监控面板。
+
+## 启动测试服
+
+准备 Node.js 24、Java 25 和 [Minecraft Java 26.1](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-1)。从项目目录安装依赖。
+
+    npm ci
+    npm run test:syntax
+
+将官方 26.1 服务端 JAR 放到 server261-fresh/server.jar，再将 server.properties.example 复制为 server261-fresh/server.properties。服务端模板只监听本机 25567 端口，难度为困难，种子留空时新世界随机生成。首次运行后，Minecraft 会生成 EULA 文件。请先阅读 Minecraft EULA，接受后再自行修改该文件并重新启动。
+
+    .\start-test-server.ps1
+
+运行 Agent。
+
+    Copy-Item .env.example .env
+    node --env-file=.env agent.js
+
+打开 [本地监控面板](http://127.0.0.1:3001/) 查看实时状态。DeepSeek 默认关闭。可在本地 .env 填入自己的密钥，再通过面板开启。暂停 Bot 时会同时关闭模型。比赛环境可按规则通过环境变量 DEEPSEEK_URL 和 DEEPSEEK_MODEL 配置统一代理及模型。
+
+## 遥测和原生旁观
+
+启动服务端并生成世界后，安装 [遥测数据包](datapacks/nmo-telemetry/README.md)，随后在服务器控制台运行 reload。
+
+    .\scripts\Install-NmoTelemetry.ps1
+    .\scripts\Get-NmoTelemetry.ps1 -Events 2 -Usage
+
+旁观客户端使用 Minecraft 26.1、Fabric Loader 0.19.5 和完整 JDK 25。先在官方启动器中安装并运行对应 Fabric 配置以下载依赖。构建脚本从 MC_JDK25 或 JAVA_HOME 读取 JDK 安装目录。
+
+    node build-observer-mod.js
+    New-Item -ItemType Directory -Path client261-clean/mods -Force
+    Copy-Item observer-mod/build/nmo-agent-observer-0.1.0.jar client261-clean/mods/ -Force
+    node launch-client261-vanilla.js
+
+服务器管理员可将 NMOViewer 设为旁观模式，并执行 spectate NMO-TestAgent NMOViewer。Mod 会从本机监控面板读取路线并绘制在游戏画面中。
+
+[前期生存流程](early-game-flow.md)

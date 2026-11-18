@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "nmo-agent-observer",
+  "version": "0.1.0",
+  "name": "NMO Agent Observer",
+  "description": "Displays live Agent decisions and targets in the observer client.",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.nmo.agentobserver.AgentObserverClient"]
+  },
+  "mixins": ["nmo-agent-observer.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "26.1"
+  }
+}
