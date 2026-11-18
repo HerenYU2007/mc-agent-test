@@ -36,6 +36,6 @@
     Copy-Item observer-mod/build/nmo-agent-observer-0.1.0.jar client261-clean/mods/ -Force
     node launch-client261-vanilla.js
 
-服务器管理员可将 NMOViewer 设为旁观模式，并执行 spectate NMO-TestAgent NMOViewer。Mod 会从本机监控面板读取路线并绘制在游戏画面中。
+服务器管理员可将 NMOViewer 设为旁观模式，并执行 spectate NMO-TestAgent NMOViewer。Mod 使用本机的 /observer 遥测接口显示路线和 Bot 的实时状态。左上显示生命、饱食和背包空位，右下显示行动和目标。按 K 展开决策、实际操作、坐标和 Token 用量。底部透明背包显示 27 格主背包、9 格快捷栏、护甲、副手、数量和耐久。升级时需同时更新 Agent 和旁观 Mod。
 
 [前期生存流程](early-game-flow.md)

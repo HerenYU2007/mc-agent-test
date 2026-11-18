@@ -324,6 +324,11 @@ function startDashboard() {
       })
       return
     }
+    if (req.url === '/observer' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify(observerState()))
+      return
+    }
     if (req.url === '/state') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*' })
       res.end(JSON.stringify({
@@ -377,6 +382,38 @@ function startDashboard() {
     res.end(page)
   })
   server.listen(DASHBOARD_PORT, '127.0.0.1', () => log('dashboard started', { url: `http://127.0.0.1:${DASHBOARD_PORT}` }))
+}
+
+function observerItem(item) {
+  if (!item?.name || item.count <= 0) return null
+  return { id: item.name.includes(':') ? item.name : `minecraft:${item.name}`,
+    count: item.count, damage: item.durabilityUsed ?? 0, enchanted: Boolean(item.enchants?.length) }
+}
+
+function observerState() {
+  const connection = bot
+  const status = { username: USERNAME, connected: Boolean(connection?.entity), modelEnabled }
+  if (!status.connected) return status
+  const inventory = connection.inventory
+  const getEquipment = destination => observerItem(inventory.slots[connection.getEquipmentDestSlot(destination)])
+  const lastCall = modelCalls.findLast(call => call.status === 'ok')
+  const audit = lastMineAudit?.cycle === currentMineOrder?.cycle && lastMineAudit?.target === currentMineOrder?.target
+    ? lastMineAudit : null
+  return { ...status, position: connection.entity.position.floored(), health: connection.health, food: connection.food,
+    freeSlots: freeBackpackSlots(inventory), foodRecovery: recoveringFood, action: lastDecision,
+    shieldRaised: raisedShields.has(connection), navigation: visibleNavigationState(), mineTarget: currentMineTarget,
+    mineOrder: mineMode ? currentMineOrder?.target : null, committedMineTarget: committedMineTarget?.position,
+    actual: audit?.actual, mineResult: audit?.result, combatReason: lastCombatDecision?.reason,
+    modelAction: lastModelDecision?.action, modelReason: lastModelDecision?.reason,
+    tokens: { total: modelUsage.totalTokens, input: lastCall?.promptTokens, output: lastCall?.completionTokens },
+    inventory: {
+      backpack: inventory.slots.slice(inventory.inventoryStart, inventory.hotbarStart).map(observerItem),
+      hotbar: inventory.slots.slice(inventory.hotbarStart, inventory.inventoryEnd).map(observerItem),
+      selected: connection.quickBarSlot,
+      armor: ['head', 'torso', 'legs', 'feet'].map(getEquipment),
+      offhand: getEquipment('off-hand'),
+    },
+  }
 }
 
 function visibleNavigationState() {
