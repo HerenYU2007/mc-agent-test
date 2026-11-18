@@ -26,7 +26,9 @@ public final class ObserverHud {
     private static final int TRACK = 0xFF344542;
     private static final int SLOT = 18;
     private static final int TRAY_WIDTH = 213;
-    private static final int TRAY_HEIGHT = 91;
+    private static final int BACKPACK_HEIGHT = 71;
+    private static final float HUD_SCALE = 0.66F;
+    private static final int VANILLA_BOTTOM_MARGIN = 29;
     private static final NumberFormat NUMBERS = NumberFormat.getIntegerInstance(Locale.US);
     private static boolean expanded;
     private static boolean detailsKeyDown;
@@ -46,21 +48,33 @@ public final class ObserverHud {
 
     public static void render(Minecraft minecraft, GuiGraphicsExtractor gui) {
         if (minecraft.level == null || minecraft.player == null || minecraft.screen != null || minecraft.options.hideGui) return;
+        float scale = Math.max(HUD_SCALE, 1.0F / minecraft.getWindow().getGuiScale());
+        int width = (int) (gui.guiWidth() / scale);
+        int height = (int) (gui.guiHeight() / scale);
+        int aboveXp = (int) ((gui.guiHeight() - VANILLA_BOTTOM_MARGIN) / scale);
+        gui.pose().pushMatrix();
+        try {
+            gui.pose().scale(scale);
+            drawHud(gui, minecraft.font, width, height, aboveXp);
+        } finally {
+            gui.pose().popMatrix();
+        }
+    }
+
+    private static void drawHud(GuiGraphicsExtractor gui, Font font, int width, int height, int aboveXp) {
         ObserverFrame frame = AgentObserverClient.frame();
-        Font font = minecraft.font;
         drawVitals(gui, font, frame);
         if (frame.inventory() == null) return;
 
-        int trayX = (gui.guiWidth() - TRAY_WIDTH) / 2;
-        int trayY = gui.guiHeight() - TRAY_HEIGHT - 29;
-        boolean trayVisible = trayX >= 4 && trayY >= 67;
-        if (trayVisible) drawInventory(gui, font, frame.inventory(), trayX, trayY);
-        else if (trayX >= 4 && gui.guiHeight() >= 115) {
-            trayY = gui.guiHeight() - 57;
-            drawCompactInventory(gui, font, frame.inventory(), trayX, trayY);
-            trayVisible = true;
+        int trayX = (width - TRAY_WIDTH) / 2;
+        int trayY = aboveXp - BACKPACK_HEIGHT;
+        boolean backpackVisible = trayX >= 4 && trayY >= 67;
+        if (trayX >= 4 && aboveXp >= 86) {
+            updateStacks(frame.inventory());
+            if (backpackVisible) drawInventory(gui, font, trayX, trayY);
+            drawHotbar(gui, font, frame.inventory(), trayX, height - SLOT - 4);
         }
-        drawDecision(gui, font, frame, trayVisible ? trayX + TRAY_WIDTH : -1, trayY);
+        drawDecision(gui, font, frame, width, aboveXp, backpackVisible ? trayX + TRAY_WIDTH : -1, trayY);
     }
 
     private static void drawVitals(GuiGraphicsExtractor gui, Font font, ObserverFrame frame) {
@@ -94,32 +108,24 @@ public final class ObserverHud {
         if (end > x) gui.fill(x, y + 9, end, y + 11, color);
     }
 
-    private static void drawInventory(GuiGraphicsExtractor gui, Font font, ObserverFrame.Inventory inventory, int x, int y) {
-        updateStacks(inventory);
+    private static void drawInventory(GuiGraphicsExtractor gui, Font font, int x, int y) {
         gui.text(font, "Bot 背包", x + 7, y + 4, FG);
         right(gui, font, "实时", x + TRAY_WIDTH - 7, y + 4, GOOD);
         int gridX = x + 25, gridY = y + 14;
         for (int i = 0; i < backpack.size(); i++) {
             drawSlot(gui, font, backpack.get(i), gridX + i % 9 * SLOT, gridY + i / 9 * SLOT, false);
         }
-        int hotbarY = gridY + SLOT * 3 + 2;
-        for (int i = 0; i < hotbar.size(); i++) {
-            drawSlot(gui, font, hotbar.get(i), gridX + i * SLOT, hotbarY, i == inventory.selected());
-        }
-        for (int i = 0; i < armor.size(); i++) {
-            drawSlot(gui, font, armor.get(i), x + 5, gridY + i * SLOT + (i == 3 ? 2 : 0), false);
-        }
-        drawSlot(gui, font, offhand, gridX + 9 * SLOT + 2, hotbarY, false);
+        for (int i = 0; i < armor.size() - 1; i++) drawSlot(gui, font, armor.get(i), x + 5, gridY + i * SLOT, false);
         if (!renderedItems && (backpack.stream().anyMatch(stack -> !stack.isEmpty()) || hotbar.stream().anyMatch(stack -> !stack.isEmpty()))) {
             renderedItems = true;
             System.out.println("观察者已绘制 Bot 背包物品");
         }
     }
 
-    private static void drawCompactInventory(GuiGraphicsExtractor gui, Font font, ObserverFrame.Inventory inventory, int x, int y) {
-        updateStacks(inventory);
-        for (int i = 0; i < hotbar.size(); i++) drawSlot(gui, font, hotbar.get(i), x + 25 + i * SLOT, y + 4, i == inventory.selected());
-        drawSlot(gui, font, offhand, x + 25 + 9 * SLOT + 2, y + 4, false);
+    private static void drawHotbar(GuiGraphicsExtractor gui, Font font, ObserverFrame.Inventory inventory, int x, int y) {
+        for (int i = 0; i < hotbar.size(); i++) drawSlot(gui, font, hotbar.get(i), x + 25 + i * SLOT, y, i == inventory.selected());
+        drawSlot(gui, font, armor.get(3), x + 5, y, false);
+        drawSlot(gui, font, offhand, x + 25 + 9 * SLOT + 2, y, false);
     }
 
     private static void updateStacks(ObserverFrame.Inventory inventory) {
@@ -152,17 +158,18 @@ public final class ObserverHud {
         gui.itemDecorations(font, stack, x, y);
     }
 
-    private static void drawDecision(GuiGraphicsExtractor gui, Font font, ObserverFrame frame, int trayRight, int trayY) {
-        int w = Math.min(164, gui.guiWidth() - 132);
+    private static void drawDecision(GuiGraphicsExtractor gui, Font font, ObserverFrame frame,
+                                     int width, int bottom, int trayRight, int trayY) {
+        int w = Math.min(164, width - 132);
         if (w < 99) return;
-        int x = gui.guiWidth() - w - 7;
+        int x = width - w - 7;
         String reason = frame.foodRecovery() ? "先补充食物，再返回原采矿目标。" :
             frame.freeSlots() == 0 ? "背包已满，优先腾出拾取空间。" : frame.reason();
         if (reason.isEmpty()) reason = frame.modelEnabled() ? "等待模型决策" : "本地策略执行中";
         var lines = font.split(Component.literal(reason), w - 12);
         int shownLines = Math.min(lines.size(), 2);
         int h = 43 + shownLines * 9 + (expanded ? 46 : 0);
-        int floor = trayRight > x - 5 ? trayY - 5 : gui.guiHeight() - 29;
+        int floor = trayRight > x - 5 ? trayY - 5 : bottom;
         int y = Math.max(7, floor - h);
         panel(gui, x, y, w, h);
         String action = frame.foodRecovery() ? "补给中" : AgentObserverClient.actionZh(frame.action());

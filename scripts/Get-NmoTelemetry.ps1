@@ -18,6 +18,7 @@ if ($state.botConnected) {
     $result.hp = [Math]::Round($state.health, 1)
     $result.food = $state.food
     $result.foodRecovery = $state.foodRecovery
+    if ($state.resupply.active -or $state.resupply.diamonds -gt 0) { $result.resupply = $state.resupply }
     $result.action = $state.decision
     $result.stage = $state.stage
     $result.inventory = [ordered]@{
@@ -43,7 +44,7 @@ if ($state.botConnected) {
 if ($Usage) { $result.tokens = $state.modelUsage }
 if ($Events -gt 0) {
     $result.events = @($state.events |
-        Where-Object { $_.message -in @('inventory cleared', 'inventory full; protected items kept', 'mine command audit', 'mining paused for food', 'food recovery complete', 'mine commitment resumed', 'dark area torch placed', 'gear upgrade crafted', 'iron workshop started', 'iron workshop recovered', 'combat policy decision', 'agent died; waiting for respawn') } |
+        Where-Object { $_.message -in @('inventory cleared', 'inventory full; protected items kept', 'mine command audit', 'mining paused for food', 'food recovery complete', 'mine commitment resumed', 'dark area torch placed', 'gear upgrade crafted', 'iron workshop started', 'iron workshop recovered', 'combat policy decision', 'agent died; waiting for respawn', 'canopy descent reached ground', 'retreat food stop', 'surface resupply required after diamonds', 'surface resupply complete', 'swim bank lowered for exit', 'swim reached dry ground') } |
         Select-Object -Last $Events |
         ForEach-Object {
             $detail = $_.data
