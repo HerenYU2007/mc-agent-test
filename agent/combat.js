@@ -3,6 +3,7 @@ const { Vec3 } = require('vec3')
 const { THREAT_RADIUS, EMPTY_BLOCK, RANGED_HOSTILES } = require('./config')
 
 const COUNTER_WINDOW_MS = 600
+const JUMP_WINDOW_MS = 570
 const HOSTILE_NAMES = new Set([
   'blaze', 'cave_spider', 'drowned', 'enderman', 'ender_mite', 'evoker',
   'husk', 'magma_cube', 'pillager', 'piglin', 'piglin_brute', 'ravager',
@@ -18,8 +19,24 @@ function meleeExchange({ shield, inReach, ready, guarding, recentBlock, incoming
   return 'wait'
 }
 
+function jumpAttackStep({ safe, elapsed, onGround, rose, descending, ready, inReach }) {
+  if (!safe) return 'cancel'
+  if (descending && ready && inReach) return 'strike'
+  if (elapsed >= JUMP_WINDOW_MS || (onGround && rose)) return ready && inReach ? 'fallback' : 'cancel'
+  return 'wait'
+}
+
+function opponentMissedSwing({ swingAge, hurtAfterSwing, guardReady }) {
+  return guardReady && !hurtAfterSwing && swingAge >= 75 && swingAge <= 185
+}
+
+function hasRaisedShield(flags, equipment) {
+  return Number.isInteger(flags) && (flags & 1) !== 0 && equipment?.[(flags & 2) !== 0 ? 1 : 0]?.name === 'shield'
+}
+
 function createCombat(runtimeState, features) {
   const duelOpponent = process.env.MC_DUEL_OPPONENT || ''
+  const jumpAttacksEnabled = process.env.MC_JUMP_ATTACKS !== '0'
   const defeated = new WeakSet()
   let lastThreatSignature = ''
 
@@ -98,6 +115,19 @@ function createCombat(runtimeState, features) {
     return item.name.startsWith('iron_') ? 1150 : 1250
   }
 
+  function canStartJumpAttack(connection) {
+    const entity = connection.entity
+    if (!entity.onGround || entity.isInWater || entity.isInLava || entity.elytraFlying || connection.health < 10 ||
+        !/_(sword|axe)$/.test(connection.heldItem?.name)) return false
+    const feet = entity.position.floored()
+    const floor = connection.blockAt(feet.offset(0, -1, 0))
+    if (floor?.boundingBox !== 'block' || /ice|slime|honey|magma|cactus|campfire/.test(floor.name)) return false
+    return [0, 1, 2, 3].every(height => {
+      const block = connection.blockAt(feet.offset(0, height, 0))
+      return block?.boundingBox === 'empty' && !/water|lava|ladder|vine|scaffolding|powder_snow|web/.test(block.name)
+    })
+  }
+
   async function executeAttack(threat, modelDecision = null) {
     const connection = runtimeState.bot
     if (!threat || !connection?.entity || features.waterOwnsMovement() || runtimeState.isEating || runtimeState.meleeConnection) return false
@@ -118,19 +148,36 @@ function createCombat(runtimeState, features) {
       if (entity.id === threat.id) killed = true
     }
     connection.on('entityDead', onDeath)
+    let lastHurtAt = 0
+    const onHurt = entity => { if (entity?.id === connection.entity?.id) lastHurtAt = Date.now() }
+    connection.on('entityHurt', onHurt)
     let attempts = 0
     let lastCounterBlock = 0
     let guardSince = Date.now()
+    let jump = null
+    let nextJumpAt = 0
+    let axePlan = null
+    let weaponReadyAt = 0
+    let nextShieldBreakAt = 0
+    let restoreWeapon = false
+    const activeHandIndex = connection.registry.entitiesByName.player?.metadataKeys?.indexOf('living_entity_flags')
+    const clearJump = () => {
+      if (!jump) return
+      connection.setControlState('jump', false)
+      jump = null
+    }
     try {
       await equipCombatItem()
       while (connection === runtimeState.bot && Date.now() < deadline && runtimeState.bot.health > 0 && !features.waterOwnsMovement() && !runtimeState.emergencyRetreating && !killed) {
         if (runtimeState.impactGuards.has(connection)) {
+          clearJump()
           await new Promise(resolve => setTimeout(resolve, 60))
           continue
         }
         let live = runtimeState.bot.entities[threat.id]
         const danger = closeCombatPlan(live)
         if (danger?.action === 'attack' && danger.target.id !== live?.id) {
+          clearJump()
           const previous = live?.id ?? threat.id
           threat = live = danger.target
           name = hostileName(live)
@@ -140,6 +187,7 @@ function createCombat(runtimeState, features) {
         }
         if (!live || live.isValid === false) break
         if (mustAvoidMelee(live) || danger?.action === 'flee') {
+          clearJump()
           features.lowerCombatShield(connection)
           runtimeState.lastCombatDecision = { action: 'flee', reason: danger?.reason || '交战中状态下降，立即撤退' }
           await executeFlee(danger?.target || live, runtimeState.lastCombatDecision)
@@ -148,26 +196,112 @@ function createCombat(runtimeState, features) {
         const sight = hostileSight(live)
         if (sight.visible && sight.distance <= 3.8) {
           await runtimeState.bot.lookAt(sight.center, true)
-          if (runtimeState.impactGuards.has(connection)) continue
+          if (runtimeState.impactGuards.has(connection)) { clearJump(); continue }
           const now = Date.now()
           const blockAt = features.latestShieldBlock(connection)
           const recentBlock = blockAt >= guardSince && blockAt > lastCounterBlock && now - blockAt <= COUNTER_WINDOW_MS
           const raisedAt = runtimeState.raisedShields.get(connection)
           const shield = connection.inventory.slots[connection.getEquipmentDestSlot('off-hand')]?.name === 'shield'
           const inReach = sight.distance <= 3 && connection.entityAtCursor(3)?.id === live.id
-          const incoming = now - features.latestHostileSwing(live) <= 450
-          const cooldown = meleeCooldown(runtimeState.bot.heldItem)
-          const action = meleeExchange({ shield, inReach, ready: now - lastManualAttackAt >= cooldown,
+          const enemySwingAt = features.latestHostileSwing(live)
+          const enemySwingAge = now - enemySwingAt
+          const incoming = enemySwingAge <= 450
+          const ready = now >= weaponReadyAt && now - lastManualAttackAt >= meleeCooldown(connection.heldItem)
+          const action = meleeExchange({ shield, inReach, ready,
             guarding: raisedAt ? now - raisedAt : 0, recentBlock, incoming,
             recover: now - lastManualAttackAt <= 245, defensive, firstStrike: lastManualAttackAt < guardSince })
-          if (action === 'strike') {
+          let swing = action === 'strike' ? (recentBlock ? 'counter' : 'normal') : null
+          const entity = connection.entity
+          const targetShieldRaised = live.type === 'player' && hasRaisedShield(live.metadata?.[activeHandIndex], live.equipment)
+          if (axePlan && (axePlan.id !== live.id || !targetShieldRaised || now > axePlan.until)) {
+            axePlan = null
+            restoreWeapon = true
+          }
+          if (restoreWeapon && !recentBlock && !jump) {
+            const previous = connection.heldItem?.type
+            await equipCombatItem()
+            if (connection.heldItem?.type !== previous) weaponReadyAt = Date.now() + meleeCooldown(connection.heldItem)
+            restoreWeapon = false
+            await new Promise(resolve => setTimeout(resolve, 45))
+            continue
+          }
+          if (axePlan && swing !== 'counter') {
+            swing = ready && inReach ? 'axe' : null
+          } else if (!axePlan && swing === 'normal' && targetShieldRaised && !defensive && now >= nextShieldBreakAt) {
+            const axe = connection.inventory.items().filter(item => /_axe$/.test(item.name) && features.toolDurability(item) > 0)
+              .sort((a, b) => meleeCooldown(a) - meleeCooldown(b) || features.toolDurability(b) - features.toolDurability(a))[0]
+            if (axe) {
+              clearJump()
+              if (connection.heldItem?.slot !== axe.slot) {
+                await connection.equip(axe, 'hand')
+                weaponReadyAt = Date.now() + meleeCooldown(connection.heldItem)
+              }
+              if (connection.heldItem?.name.endsWith('_axe')) {
+                axePlan = { id: live.id, until: Math.max(weaponReadyAt, now) + 900 }
+                nextShieldBreakAt = now + 2100
+                features.log('combat shield breaker readying', { target: name, weapon: connection.heldItem.name })
+                continue
+              }
+            }
+          }
+          if (jump && targetShieldRaised) clearJump()
+          if (jump && swing !== 'counter') {
+            const elapsed = now - jump.at
+            const y = entity.position.y
+            jump.peakY = Math.max(jump.peakY, y)
+            if (!entity.onGround || elapsed >= 110) connection.setControlState('jump', false)
+            const step = jumpAttackStep({
+              safe: enemySwingAt <= jump.at && lastHurtAt <= jump.at &&
+                !entity.isInWater && !entity.isInLava && connection.health >= jump.health,
+              elapsed, onGround: entity.onGround, rose: jump.peakY > jump.originY + 0.15,
+              descending: !entity.onGround && entity.velocity.y < -0.06 && jump.peakY - y >= 0.09 && y >= jump.originY + 0.2,
+              ready, inReach,
+            })
+            if (step === 'wait') {
+              await new Promise(resolve => setTimeout(resolve, 45))
+              continue
+            }
+            if (step === 'strike') swing = 'jump'
+            if (step === 'fallback') swing = 'normal'
+            if (step === 'cancel') features.log('combat jump cancelled', { target: name, elapsed })
+            clearJump()
+          }
+          const jumpOpening = live.type === 'player'
+            ? ready && inReach && !recentBlock && opponentMissedSwing({
+              swingAge: enemySwingAge, hurtAfterSwing: lastHurtAt >= enemySwingAt,
+              guardReady: !shield || Boolean(raisedAt && now - raisedAt >= 340),
+            })
+            : swing === 'normal' && !incoming
+          if (!axePlan && !targetShieldRaised && jumpOpening && jumpAttacksEnabled && !defensive && now >= nextJumpAt &&
+              sight.distance <= 2.75 && canStartJumpAttack(connection)) {
+            features.lowerCombatShield(connection)
+            features.stopPathfinder()
+            connection.setControlState('sprint', false)
+            jump = { at: now, originY: entity.position.y, peakY: entity.position.y, health: connection.health }
+            nextJumpAt = now + 950
+            connection.setControlState('jump', true)
+            features.log('combat jump started', { target: name, id: live.id })
+            await new Promise(resolve => setTimeout(resolve, 45))
+            continue
+          }
+          if (swing) {
+            clearJump()
             features.lowerCombatShield(connection)
             connection.attack(live, true)
             lastManualAttackAt = now
-            if (recentBlock) {
+            if (swing === 'counter') {
               lastCounterBlock = blockAt
               runtimeState.lastCombatDecision = { action: 'attack', target: name, defensive, reason: '盾牌已挡下攻击，武器冷却结束后反击' }
               features.log('combat shield counter', { target: name, id: live.id, delayMs: now - blockAt })
+            } else if (swing === 'axe') {
+              axePlan = null
+              restoreWeapon = true
+              nextShieldBreakAt = now + 5000
+              runtimeState.lastCombatDecision = { action: 'attack', target: name, defensive, reason: '对手正在举盾，用斧头打盾' }
+              features.log('combat axe shield swing', { target: name, id: live.id, weapon: connection.heldItem.name })
+            } else if (swing === 'jump') {
+              runtimeState.lastCombatDecision = { action: 'attack', target: name, defensive, reason: '实际起跳并在下落时攻击' }
+              features.log('combat jump swing', { target: name, id: live.id, velocityY: entity.velocity.y })
             }
             attempts = 0
             features.log('combat swing', { target: name, id: live.id })
@@ -176,11 +310,12 @@ function createCombat(runtimeState, features) {
             if (guarding && !defensive && !inReach) features.stepWhileShielding(connection, sight.center, live.position)
             else features.stopShieldSteps(connection)
           }
-          if (inReach || action === 'strike' || (action === 'guard' && (defensive || incoming || !raisedAt || now - raisedAt < 800))) {
+          if (inReach || swing || (action === 'guard' && (defensive || incoming || !raisedAt || now - raisedAt < 800))) {
             await new Promise(resolve => setTimeout(resolve, 55))
             continue
           }
         }
+        clearJump()
         features.lowerCombatShield(connection)
         if (defensive) {
           await new Promise(resolve => setTimeout(resolve, 100))
@@ -197,9 +332,11 @@ function createCombat(runtimeState, features) {
         await new Promise(resolve => setTimeout(resolve, 120))
       }
     } finally {
+      clearJump()
       if (!runtimeState.fleeingActive && !runtimeState.impactGuards.has(connection)) features.lowerCombatShield(connection)
       runtimeState.meleeConnection = null
       connection.removeListener('entityDead', onDeath)
+      connection.removeListener('entityHurt', onHurt)
       features.clearNavigation('combat-ended')
       features.log('combat ended', { target: name, id: threat.id, killed })
       if (killed && closeCombatPlan()) runtimeState.urgentThreatQueued = true
@@ -590,3 +727,6 @@ function createCombat(runtimeState, features) {
 
 module.exports = createCombat
 module.exports.meleeExchange = meleeExchange
+module.exports.jumpAttackStep = jumpAttackStep
+module.exports.opponentMissedSwing = opponentMissedSwing
+module.exports.hasRaisedShield = hasRaisedShield
