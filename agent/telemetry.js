@@ -22,14 +22,18 @@ function createTelemetry(runtimeState, features) {
     const action = runtimeState.fleeingActive && runtimeState.isEating ? '撤离中进食' :
       runtimeState.lastDecision === 'combat-resume' ? '脱战恢复原任务' : runtimeState.lastDecision
     const visiting = runtimeState.supplyBase.status().expedition?.phase === 'visiting'
+    const hut = runtimeState.supplyStation.hut && runtimeState.supplyStation.status()
+    const hutAction = hut && (action === 'build-structure' || (action === 'explore' && runtimeState.supplyStation.pending))
     const audit = runtimeState.lastMineAudit?.cycle === runtimeState.currentMineOrder?.cycle && runtimeState.lastMineAudit?.target === runtimeState.currentMineOrder?.target
       ? runtimeState.lastMineAudit : null
     return { ...status, position: connection.entity.position.floored(), health: connection.health, food: connection.food,
       freeSlots: features.freeBackpackSlots(inventory), foodRecovery: runtimeState.recoveringFood,
-      action: VILLAGE_ACTIONS[action] || FARM_LABELS[action] || BOW_ACTIONS[action] || action,
+      action: hutAction ? hut.phase : VILLAGE_ACTIONS[action] || FARM_LABELS[action] || BOW_ACTIONS[action] || action,
       shieldRaised: runtimeState.raisedShields.has(connection), navigation: features.visibleNavigationState(), mineTarget: runtimeState.currentMineTarget,
       mineOrder: runtimeState.mineMode ? runtimeState.currentMineOrder?.target : null, committedMineTarget: runtimeState.committedMineTarget?.position,
-      actual: audit?.actual, mineResult: audit?.result, combatReason: visiting && VILLAGE_ACTIONS[action] ? null : runtimeState.lastCombatDecision?.reason,
+      actual: audit?.actual, mineResult: audit?.result,
+      combatReason: hutAction ? `生存小屋 · ${hut.phase} · ${hut.placed}/${hut.total} 格` :
+        visiting && VILLAGE_ACTIONS[action] ? null : runtimeState.lastCombatDecision?.reason,
       modelAction: VILLAGE_ACTIONS[model?.action] || model?.action || (runtimeState.modelEnabled ? waiting : null),
       modelReason: model?.reason,
       tokens: { total: runtimeState.modelUsage.totalTokens, input: lastCall?.promptTokens, output: lastCall?.completionTokens },

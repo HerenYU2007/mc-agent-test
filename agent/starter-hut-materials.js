@@ -80,6 +80,7 @@ async function starterHutMaterials(bot, materials, work, features) {
   const missingGlass = (materials.glass ?? 0) - features.inventoryItemCount('glass')
   if (missingGlass > 0) {
     if (features.inventoryCount(SAND) < missingGlass) {
+      work.phase('找沙制玻璃')
       if (!await collectSand(bot, work, features) && work.ready()) await work.explore()
       return null
     }
@@ -92,6 +93,7 @@ async function starterHutMaterials(bot, materials, work, features) {
       if (!await features.makePlanksFor(planksForFuel)) await features.collectWoodWithPlan()
       return null
     }
+    work.phase('熔炉烧玻璃')
     await features.processFurnaceBatch(SAND, 'starter hut glass collected', 30000,
       item => ['coal', 'charcoal'].includes(item.name) || item.name.endsWith('_planks'), missingGlass)
     return null

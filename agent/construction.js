@@ -105,6 +105,10 @@ function createConstruction(runtimeState, features) {
     })
     const walk = async (goal, timeout) => {
       if (!ready()) return false
+      const target = goal.pos ?? goal
+      if ([target.x, target.y, target.z].every(Number.isFinite)) {
+        runtimeState.navigationState = { target: { x: target.x, y: target.y, z: target.z }, waypoints: [], label: 'build-structure' }
+      }
       connection.pathfinder.setMovements(constructionMovement)
       let lastPosition = connection.entity.position.clone()
       let lastProgress = Date.now()
@@ -147,6 +151,7 @@ function createConstruction(runtimeState, features) {
         materials: async (materials, hutSite) => {
           const remaining = hutSite ? await starterHutMaterials(connection, materials, {
             ready, walk, log: features.log, explore: features.exploreOneStep,
+            phase: phase => { runtimeState.supplyStation.phase = phase },
             protected: position => runtimeState.supplyStation.protects(connection, position),
           }, features) : materials
           return remaining ? supplyStationMaterials(connection, remaining, ready) : false
