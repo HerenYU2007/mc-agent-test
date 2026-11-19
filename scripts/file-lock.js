@@ -112,8 +112,14 @@ function collabTip() {
 function readLocks() {
   const tip = remoteTip(lockRef)
   if (!tip) return { tip, locks: new Map() }
-  const state = JSON.parse(git(['show', '-s', '--format=%B', tip]).text)
-  if (state.version !== 1 || !Array.isArray(state.locks)) throw new Error('远程文件锁记录格式无效。')
+  const stored = git(['show', '-s', '--format=%B', tip]).text
+  let state
+  try {
+    state = JSON.parse(stored)
+  } catch {
+    throw new Error('远程文件锁记录格式无效。')
+  }
+  if (state?.version !== 1 || !Array.isArray(state.locks)) throw new Error('远程文件锁记录格式无效。')
   const locks = new Map()
   for (const entry of state.locks) {
     if (!entry || typeof entry.file !== 'string' || typeof entry.owner !== 'string' || !ownerId.test(entry.owner) ||
@@ -253,9 +259,21 @@ function main() {
   if (!paths.length && !locks.size) console.log('当前没有文件锁。')
 }
 
-try {
-  main()
-} catch (error) {
-  console.error(error.message)
-  process.exitCode = 1
+function assertHeldPaths(files, gitDir) {
+  if (!files.length) return
+  const owner = getOwner(gitDir)
+  const { locks } = readLocks()
+  const missing = files.filter(file => locks.get(normalizeFile(file).key)?.owner !== owner)
+  if (missing.length) throw new Error(`等当前工作树取得文件锁：${missing.join('、')}`)
 }
+
+if (require.main === module) {
+  try {
+    main()
+  } catch (error) {
+    console.error(error.message)
+    process.exitCode = 1
+  }
+}
+
+module.exports = { git, verifyTarget, remoteTip, isAncestor, assertHeldPaths }

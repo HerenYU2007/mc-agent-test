@@ -2,6 +2,8 @@
 
 在两台电脑上分别打开此项目的 `collab` 工作树并运行同步器。它在一个 PowerShell 进程内持续运行，默认每 30 秒检查一轮。日常编辑可以继续交给 Codex，PowerShell 负责同步已经保存到磁盘的文件。
 
+使用 macOS 的协作者请按 [macOS Codex 接手指南](CODEX-MAC-HANDOFF.md) 启动 Node.js 同步器。两种同步器共用 `collab` 分支和文件锁。
+
 修改共享文件前按 [跨电脑文件锁](FILE-LOCKS.md) 申请锁。等此同步器发布提交后，用文件锁脚本确认远程已包含修改，再释放。
 
 ## 第一台电脑
