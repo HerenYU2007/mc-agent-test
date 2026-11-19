@@ -42,6 +42,8 @@
 
 Agent 的功能代码位于 `agent/`。命令入口继续是 `node agent.js`，功能位置和并行编辑约定见 [AI 接手文档](docs/AI-HANDOFF.md#并行编辑)。改完运行 `npm run test:syntax` 检查入口、功能模块和蓝图代码。
 
+创造模式下可在空地逐块施工 `.litematic`。命令、测试样图和旁观步骤见 [创造模式逐块施工](docs/CREATIVE-BUILD.md)。
+
 两台 Windows 电脑可使用同一个 `collab` 分支自动同步。首次配置、启动和冲突处理见 [PowerShell 自动同步说明](docs/AUTO-SYNC.md)。
 
 ## 钻石套后的补给基地

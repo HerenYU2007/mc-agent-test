@@ -16,6 +16,7 @@
 | 战斗、撤退、盾牌与来箭格挡 | [`combat.js`](../agent/combat.js)、[`combat-defence.js`](../agent/combat-defence.js) |
 | 食物、夜间避难和死亡掉落 | [`food.js`](../agent/food.js)、[`shelter.js`](../agent/shelter.js)、[`death-recovery.js`](../agent/death-recovery.js) |
 | 5×5 施工、NBT 导入、基地与红石工坊 | [`construction.js`](../agent/construction.js)、[`supply-station.js`](../supply-station.js)、[`structure-nbt.js`](../structure-nbt.js)、[`supply-base.js`](../supply-base.js) |
+| 创造模式 `.litematic` 逐块施工 | [`creative-build.js`](../agent/creative-build.js)、[`litematic.js`](../litematic.js)、[`build-creative.js`](../scripts/build-creative.js)、[实测步骤](CREATIVE-BUILD.md) |
 | 网页面板、HTTP 接口、观测数据 | [`dashboard.html`](../agent/dashboard.html)、[`dashboard.js`](../agent/dashboard.js)、[`telemetry.js`](../agent/telemetry.js) |
 | 原生 HUD、线路、目标和背包 | [`ObserverHud.java`](../observer-mod/src/main/java/com/nmo/agentobserver/ObserverHud.java)、[`ObserverFrame.java`](../observer-mod/src/main/java/com/nmo/agentobserver/ObserverFrame.java)、[`AgentObserverClient.java`](../observer-mod/src/main/java/com/nmo/agentobserver/AgentObserverClient.java) |
 | 精简运行快照 | [`Get-NmoTelemetry.ps1`](../scripts/Get-NmoTelemetry.ps1)、[原版遥测数据包](../datapacks/nmo-telemetry/README.md) |

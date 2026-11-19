@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "agent": "node agent.js",
+    "build:creative": "node scripts/build-creative.js",
+    "test:creative-build": "node scripts/test-creative-build.js",
     "test:syntax": "node scripts/check-agent-syntax.js"
   },
   "keywords": [],
