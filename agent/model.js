@@ -1,4 +1,5 @@
 const { DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_URL } = require('./config')
+const { ACTIONS: VILLAGE_ACTIONS } = require('./expedition-village')
 
 function createModel(runtimeState, features) {
   const pendingModelCalls = new Set()
@@ -39,7 +40,14 @@ function createModel(runtimeState, features) {
       messages: [
         {
           role: 'system',
-          content: [
+          content: trigger === 'village-visit' ? [
+            '你是 Minecraft 生存 Bot 的访村决策器，只返回 JSON {"action":"选项","reason":"中文理由","experience":"一句中文经验"}。',
+            '仅从 choices 选一个。enter_village 进村找已有标记的资源，harvest_wheat 采成熟小麦或干草，',
+            'craft_bread 用库存小麦做面包，take_bed 带走一张无人使用的备用床，observe_village 停在安全位置观察。',
+            'supplies 是背包库存，resources 是村庄观测。resources.spareBed 只表示附近有可尝试取得的床，supplies.bed 才表示已经携带。干草可拆成小麦，不能用来做床。',
+            '根据资源和库存判断是否值得行动。已有食物仍可合理补充面包和一张远行备用床，已够用时观察。',
+            '安全返程由本地判断，发现村庄、资源暂不可达或单项物资已经够用不用返回。理由写具体物资或地形。',
+          ].join(' ') : [
             '你是 Minecraft 生存 Agent 的高层决策器。',
             '根据当前状态选择一个动作，只返回 JSON：',
             '{"action":"attack|flee|collect_wood|gear_up|mine|build_camp|inspect_stone|explore","target_name":"目标实体名或方块名","target":{"x":整数,"z":整数},"reason":"简短原因","experience":"对本轮环境或行动的一句话经验总结"}。挖矿必须填写一种矿物，例如 diamond、iron、coal 或 stone，并与理由中所说的采矿目标一致。',
@@ -83,7 +91,9 @@ function createModel(runtimeState, features) {
       const content = body.choices?.[0]?.message?.content
       const decision = typeof content === 'string' ? JSON.parse(content) : content
       const allowed = new Set(['attack', 'flee', 'collect_wood', 'gear_up', 'mine', 'build_camp', 'inspect_stone', 'explore'])
-      if (!decision || !allowed.has(decision.action)) throw new Error('invalid model action')
+      if (!decision || !(trigger === 'village-visit'
+        ? VILLAGE_ACTIONS.includes(decision.action) && state.choices.includes(decision.action)
+        : allowed.has(decision.action))) throw new Error('invalid model action')
       decision.reason = String(decision.reason || '').slice(0, 240)
       decision.experience = String(decision.experience || decision.reason || '').slice(0, 500)
       if (decision.target && Number.isFinite(Number(decision.target.x)) && Number.isFinite(Number(decision.target.z))) {

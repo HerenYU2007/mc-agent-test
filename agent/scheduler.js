@@ -276,7 +276,8 @@ function createScheduler(runtimeState, features) {
         runtimeState.lastDecision = 'supply-base'
         await runtimeState.supplyBase.run(runtimeState.bot)
         const expedition = runtimeState.supplyBase.status().expedition
-        if (expedition?.phase === 'searching' || expedition?.phase === 'returning') runtimeState.lastDecision = `expedition-${expedition.phase}`
+        if (expedition?.phase === 'visiting') runtimeState.lastDecision = expedition.villageAction || 'observe_village'
+        else if (expedition?.phase === 'searching' || expedition?.phase === 'returning') runtimeState.lastDecision = `expedition-${expedition.phase}`
         return
       }
       const upgrade = features.nextIronUpgrade()

@@ -2,9 +2,24 @@ const path = require('node:path')
 const { Movements } = require('mineflayer-pathfinder')
 const { createSupplyBase } = require('../supply-base')
 const { createVillageExpedition } = require('./expedition')
+const { createBaseFarm } = require('./base-farm')
 const { PROJECT_ROOT, HOST, PORT, USERNAME, LOG_NAMES, IRON_FUEL_NAMES } = require('./config')
 
 const POST_ARMOR_DIAMONDS = 10
+const WOOD_DOOR = /^(oak|spruce|birch|jungle|acacia|dark_oak|mangrove|cherry|pale_oak|bamboo|crimson|warped)_door$/
+
+class ExpeditionMovements extends Movements {
+  getBlock(position, dx, dy, dz) {
+    const block = super.getBlock(position, dx, dy, dz)
+    if (WOOD_DOOR.test(block.name) && block.getProperties().open) {
+      block.safe = true
+      block.physical = false
+      block.replaceable = false
+      block.height = block.position.y
+    }
+    return block
+  }
+}
 
 function createBaseProgression(runtimeState, features) {
   function initializeSupplyBase() {
@@ -49,8 +64,21 @@ function createBaseProgression(runtimeState, features) {
         await features.mineForGear(null, objective.kind, null, { objective })
       },
     }
+    const travel = async (connection, goal, label, timeout) => {
+      const walking = new ExpeditionMovements(connection)
+      walking.canDig = false
+      walking.allow1by1towers = false
+      walking.allowParkour = false
+      walking.maxDropDown = 2
+      walking.scafoldingBlocks = []
+      connection.pathfinder.setMovements(walking)
+      try { await api.goto(goal, label, timeout) }
+      finally { if (connection === runtimeState.bot) connection.pathfinder.setMovements(runtimeState.movements) }
+    }
+    const work = { ...api, travel, pickup: features.pickUpBlockDrop, equipTool: features.equipBestToolFor }
+    api.farm = createBaseFarm({ ...work, showAction: action => { runtimeState.lastDecision = action } })
     api.expedition = createVillageExpedition({
-      ...api,
+      ...work,
       statePath: process.env.MC_EXPEDITION_STATE_PATH || `${api.statePath}.expedition.jsonl`,
       acquireBed: async () => {
         if (await features.acquireShelterBed()) return true
@@ -60,6 +88,16 @@ function createBaseProgression(runtimeState, features) {
       regear: async () => {
         await features.craftAvailableGear()
         await features.autoEquipArmor()
+      },
+      ensureTable: features.ensureCraftingTable,
+      reclaimTable: features.reclaimTemporaryCraftingTable,
+      showVillageAction: action => { runtimeState.lastDecision = action },
+      selectVillage: async (connection, { choices, supplies, resources }) => {
+        if (!runtimeState.modelEnabled || !api.safe(connection)) return null
+        return (await features.askDeepSeek({
+          cycle: runtimeState.cycle, position: connection.entity.position.floored(), health: connection.health,
+          hunger: connection.food, supplies, resources, choices,
+        }, 'village-visit'))?.action
       },
       selectScout: async (connection, candidates, village) => {
         if (!runtimeState.modelEnabled || !api.safe(connection)) return null
@@ -77,17 +115,6 @@ function createBaseProgression(runtimeState, features) {
         const selected = candidates.find(candidate => candidate.x === decision.target.x && candidate.z === decision.target.z)
         if (selected) features.log('expedition model direction accepted', { position: selected, reason: decision.reason })
         return selected ?? null
-      },
-      travel: async (connection, goal, label, timeout) => {
-        const walking = new Movements(connection)
-        walking.canDig = false
-        walking.allow1by1towers = false
-        walking.allowParkour = false
-        walking.maxDropDown = 2
-        walking.scafoldingBlocks = []
-        connection.pathfinder.setMovements(walking)
-        try { await api.goto(goal, label, timeout) }
-        finally { if (connection === runtimeState.bot) connection.pathfinder.setMovements(runtimeState.movements) }
       },
     })
     runtimeState.supplyBase = createSupplyBase(api)

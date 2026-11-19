@@ -3,6 +3,7 @@ const path = require('node:path')
 const { once } = require('node:events')
 const { Vec3 } = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
+const { farmPlots } = require('./agent/base-farm')
 
 const AIR = /^(air|cave_air|void_air)$/
 const STONE = ['cobblestone', 'cobbled_deepslate']
@@ -60,6 +61,7 @@ const SITE_OFFSETS = [[0, 0], [3, 0], [-3, 0], [0, 3], [0, -3], [4, 4], [-4, 4],
 
 function createSupplyBase(api) {
   let anchor = null
+  let farmCenter = null
   let unlocked = false
   let qualificationDiamonds = 0
   let trip = null
@@ -73,6 +75,9 @@ function createSupplyBase(api) {
     if ([1, 2].includes(saved.version) && saved.world === api.world) {
       if (Array.isArray(saved.position) && saved.position.length === 3 && saved.position.every(Number.isSafeInteger)) {
         anchor = new Vec3(...saved.position)
+      }
+      if (anchor && Array.isArray(saved.farm) && saved.farm.length === 3 && saved.farm.every(Number.isSafeInteger)) {
+        farmCenter = new Vec3(...saved.farm)
       }
       if (saved.version === 2 && Number.isSafeInteger(saved.qualificationDiamonds) && saved.qualificationDiamonds >= 0) {
         qualificationDiamonds = saved.qualificationDiamonds
@@ -89,6 +94,7 @@ function createSupplyBase(api) {
     fs.writeFileSync(pending, JSON.stringify({
       version: 2, world: api.world, position: position && [position.x, position.y, position.z],
       qualificationDiamonds: diamonds, unlocked: ready,
+      farm: farmCenter && [farmCenter.x, farmCenter.y, farmCenter.z],
     }))
     fs.renameSync(pending, api.statePath)
     anchor = position
@@ -120,6 +126,7 @@ function createSupplyBase(api) {
   const inOverworld = connection => connection?.game?.dimension === 'overworld'
   const piecePos = piece => anchor.offset(...piece.offset)
   const blockFor = (connection, id) => connection.blockAt(piecePos(BY_ID.get(id)))
+  const builtArea = position => PARTS.some(piece => position.equals(piecePos(piece))) || api.expedition?.owns(position)
 
   function matches(piece, block) {
     const name = piece.id === 'indicator' ? 'redstone_wall_torch' : null
@@ -411,7 +418,7 @@ function createSupplyBase(api) {
   async function run(connection) {
     if (!unlocked || !inOverworld(connection)) return
     if (anchor && api.expedition?.active(connection, anchor)) {
-      setPhase(api.expedition.status().phase === 'returning' ? 'expedition-returning' : 'expedition-searching')
+      setPhase(`expedition-${api.expedition.status().phase}`)
       await api.expedition.continueTrip(connection, anchor)
       return
     }
@@ -441,7 +448,10 @@ function createSupplyBase(api) {
       setPhase(phase)
     }
 
-    if (api.expedition?.inside(connection) || api.expedition?.buildingShelter()) {
+    const inside = api.expedition?.inside(connection)
+    if (inside && api.expedition.status().spawn && !connection.isSleeping && api.farm?.hasWork(connection, farmCenter)) {
+      if (!await api.expedition.leave(connection)) return
+    } else if (inside || api.expedition?.buildingShelter()) {
       await runExpedition()
       return
     }
@@ -523,6 +533,13 @@ function createSupplyBase(api) {
       visitAfter = 0
       return collect(connection, 'iron', IRON, 8)
     }
+    if (api.farm && await api.farm.run(connection, anchor, farmCenter, table, builtArea, position => {
+      farmCenter = position
+      saveProgress(anchor)
+    })) {
+      setPhase('farming')
+      return
+    }
     if (api.expedition) {
       await runExpedition()
       return
@@ -553,14 +570,15 @@ function createSupplyBase(api) {
     run,
     recoverFood,
     owns: (connection, position) => Boolean(anchor && inOverworld(connection) && position &&
-      (PARTS.some(piece => position.equals(piecePos(piece))) || api.expedition?.owns(position))),
+      (builtArea(position) || api.farm?.owns(farmCenter, position))),
     keeps: item => SPARES.some(spare => spare.name === item.name) && api.durability(item) > DURABILITY_TARGET,
     status: () => {
       const progress = qualification()
       let phase = status.phase
       if (!progress.unlocked && progress.diamonds) phase = progress.needsResupply ? 'awaiting-resupply' : 'awaiting-diamonds'
       if (progress.unlocked && phase === 'awaiting-armor') phase = 'selecting-site'
-      return { ...status, phase, position: anchor, qualification: progress, expedition: api.expedition?.status() }
+      return { ...status, phase, position: anchor, qualification: progress, expedition: api.expedition?.status(),
+        farm: farmCenter && { center: farmCenter, plots: farmPlots(farmCenter) } }
     },
   }
 }
