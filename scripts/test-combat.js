@@ -3,7 +3,8 @@ const { EventEmitter } = require('node:events')
 const { Vec3 } = require('vec3')
 const { meleeExchange, jumpAttackStep, opponentMissedSwing, hasRaisedShield } = require('../agent/combat')
 const createCombatInterruption = require('../agent/combat-interruption')
-const { bowAim, clearArrowPath } = require('../agent/combat-bow')
+const createCombatBow = require('../agent/combat-bow')
+const { bowAim, clearArrowPath, retreatMotion } = createCombatBow
 
 const exchange = { shield: true, inReach: true, ready: true, guarding: 300,
   recentBlock: false, incoming: true, recover: false, defensive: false, firstStrike: true }
@@ -42,6 +43,34 @@ assert.ok(straight.velocity.y > 0)
 assert.ok(leading.velocity.z > 0.2)
 assert.equal(clearArrowPath({ raycast: () => null }, arrowOrigin, straight), true)
 assert.equal(clearArrowPath({ raycast: start => start.x > 5 ? {} : null }, arrowOrigin, straight), false)
+
+const trail = offsets => offsets.map(([x, z], index) => ({ at: index * 100, position: new Vec3(x, 65.5, z) }))
+const lateralMotion = retreatMotion(arrowOrigin, trail([[16, 0], [15.5, 0.4], [15, 0.9]]))
+assert.equal(lateralMotion.reversing, false)
+assert.ok(lateralMotion.velocity.x < 0 && lateralMotion.velocity.z > 0.2)
+const turned = retreatMotion(arrowOrigin, trail([[16, 0], [15.5, 0.4], [15, -0.1]]))
+assert.equal(turned.reversing, true)
+assert.ok(turned.velocity.z < 0)
+assert.equal(retreatMotion(arrowOrigin, trail([[16, 0], [15, 0.4]])).velocity.norm(), 0)
+
+const rangedBot = {
+  entity: { position: arrowOrigin, onGround: true },
+  inventory: { items: () => [{ name: 'bow' }, { name: 'arrow' }], slots: [] },
+  health: 8, food: 20, getEquipmentDestSlot: () => 45,
+}
+const retreat = { bot: rangedBot, botEnabled: true, fleeingActive: true, impactGuards: new WeakSet() }
+let flanked = false
+const { canUseCombatBow } = createCombatBow(retreat, {
+  hostileSight: () => ({ visible: true }), toolDurability: () => 300,
+  findNearestHostile: () => flanked ? {} : null,
+})
+assert.equal(canUseCombatBow(rangedBot, { position: arrowTarget }), false)
+assert.equal(canUseCombatBow(rangedBot, { position: arrowTarget }, true), true)
+assert.equal(canUseCombatBow(rangedBot, { position: arrowOrigin.offset(12, 0, 0) }, true), false)
+assert.equal(canUseCombatBow(rangedBot, { position: arrowOrigin.offset(12, 0, 0) }, true, true), true)
+assert.equal(canUseCombatBow(rangedBot, { position: arrowOrigin.offset(9, 0, 0) }, true, true), false)
+flanked = true
+assert.equal(canUseCombatBow(rangedBot, { position: arrowTarget }, true), false)
 
 async function testInterruption() {
   const original = { isEnd: () => false }

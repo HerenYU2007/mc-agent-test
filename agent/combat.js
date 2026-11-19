@@ -388,6 +388,7 @@ function createCombat(runtimeState, features) {
     const eatOnTheMove = () => {
       if ((!recoveringFromLowHealth && connection.health > 10) || meal || Date.now() < nextMealAt ||
           !features.safeToEatOnRetreat(connection)) return
+      if (!features.getEdibleFoods().some(item => connection.food < 20 || /^(enchanted_)?golden_apple$/.test(item.name))) return
       nextMealAt = Date.now() + 2600
       features.lowerCombatShield(connection)
       meal = features.eatFoodIfNeeded({ retreat: true, moving: true })
@@ -420,6 +421,11 @@ function createCombat(runtimeState, features) {
       }
       if (connection !== runtimeState.bot || connection.health <= 0 || features.waterOwnsMovement()) return false
       let advanced = false
+      let retreatShotTried = false
+      const retreatOrigin = connection.entity.position.clone()
+      const canShootOnRetreat = () => !retreatShotTried && !meal &&
+        connection.entity.position.distanceTo(retreatOrigin) >= 3 &&
+        features.canUseCombatBow(connection, threat, true)
       for (let leg = 0; leg < 5 && connection === runtimeState.bot && connection.health > 0 && !features.waterOwnsMovement(); leg += 1) {
         if (connection !== runtimeState.bot || connection.health <= 0 || features.waterOwnsMovement()) return false
         if (!meal && await features.tryEmergencyPit(connection)) return true
@@ -428,10 +434,19 @@ function createCombat(runtimeState, features) {
           runtimeState.urgentThreatQueued = true
           return true
         }
-        if (leg > 0 && !findNearestHostile(14)) break
+        if (leg > 0 && !findNearestHostile(retreatShotTried ? 19 : 14)) break
         if (plan?.action === 'flee') threat = plan.target
-        advanced = await executeRetreatLeg(connection, threat, leg === 0 ? modelDecision : null, eatOnTheMove)
+        advanced = await executeRetreatLeg(connection, threat, leg === 0 ? modelDecision : null, () => {
+          eatOnTheMove()
+          return canShootOnRetreat()
+        })
         if (!advanced) break
+        eatOnTheMove()
+        if (canShootOnRetreat()) {
+          retreatShotTried = true
+          await features.shootCombatBow(connection, threat, true)
+          if (connection === runtimeState.bot && runtimeState.fleeingActive) runtimeState.lastDecision = 'flee'
+        }
       }
       if (meal) await meal
       if (recoveringFromLowHealth && features.safeToEatOnRetreat(connection)) await features.restAfterRetreat(connection)
@@ -525,7 +540,7 @@ function createCombat(runtimeState, features) {
         runtimeState.navigationState = { target, waypoints: [], label: 'flee' }
         features.log('fleeing', { target, threat: features.entityNameOf(threat) || null, reason: modelDecision?.reason || '' })
         try {
-          await gotoRetreatWaypoint(connection, target, onAdvance)
+          if (await gotoRetreatWaypoint(connection, target, onAdvance)) return true
           pursuit.goals += 1
           pursuit.updated = Date.now()
           features.log('retreat waypoint reached', { target, position: connection.entity.position.floored() })
@@ -541,12 +556,16 @@ function createCombat(runtimeState, features) {
     const goal = new goals.GoalNearXZ(target.x, target.z, 1)
     let lastPosition = connection.entity.position.clone()
     let lastProgress = Date.now()
+    let pausedForShot = false
     const watch = setInterval(() => {
       if (connection !== runtimeState.bot || connection.pathfinder.goal !== goal || !connection.entity) return
       if (connection.entity.position.distanceTo(lastPosition) >= 0.35) {
         lastPosition = connection.entity.position.clone()
         lastProgress = Date.now()
-        onAdvance?.()
+        if (onAdvance?.()) {
+          pausedForShot = true
+          connection.pathfinder.setGoal(null)
+        }
       } else if (Date.now() - lastProgress >= 950) {
         features.log('retreat route stalled; changing direction', { target })
         connection.pathfinder.setGoal(null)
@@ -554,9 +573,12 @@ function createCombat(runtimeState, features) {
     }, 125)
     try {
       await features.gotoWithTimeout(goal, 'flee', 4200)
+    } catch (error) {
+      if (!pausedForShot) throw error
     } finally {
       clearInterval(watch)
     }
+    return pausedForShot
   }
 
   async function backstepFromThreat(threat, durationMs = 1800) {
