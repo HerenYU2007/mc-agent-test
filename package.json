@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "agent": "node agent.js",
-    "test:syntax": "node --check agent.js"
+    "test:syntax": "node --check agent.js && node --check supply-base.js"
   },
   "keywords": [],
   "author": "",

@@ -9,6 +9,7 @@ const toolPlugin = require('mineflayer-tool').plugin
 const pvp = require('mineflayer-pvp').plugin
 const mineflayerViewer = require('prismarine-viewer').mineflayer
 const { Vec3 } = require('vec3')
+const { createSupplyBase } = require('./supply-base')
 
 const VERSION = process.env.MC_VERSION || '26.3'
 const HOST = process.env.MC_HOST || '127.0.0.1'
@@ -110,6 +111,53 @@ let surfaceRouteActive = false
 let lastDrySurface = null
 const POST_ARMOR_DIAMONDS = 10
 const SURFACE_FOOD_TARGET = 8
+const supplyBase = createSupplyBase({
+  statePath: process.env.MC_BASE_STATE_PATH || path.join(__dirname, 'last-state.json'),
+  world: JSON.stringify([HOST, PORT, USERNAME]),
+  hasArmor: hasDiamondArmor,
+  log,
+  durability: toolDurability,
+  safe: connection => canWorkHere(connection) && !fleeingActive &&
+    !damageInterruptActive(connection) && !closeCombatPlan(),
+  openSurface: openSurfaceAt,
+  goto: gotoWithTimeout,
+  woodSupply: () => plankCount() + inventoryCount(LOG_NAMES) * 4,
+  planks: makePlanksFor,
+  craft: craftNamed,
+  foodReserve,
+  eat: eatFoodIfNeeded,
+  forage: () => huntNearbyAnimalsOrForage({ stockUp: true }),
+  cookFood: cookRawMeatInFurnace,
+  wood: collectWoodWithPlan,
+  surface: approachFoodSurface,
+  explore: exploreOneStep,
+  smeltIron: () => processFurnaceBatch(new Set(['raw_iron']), 'base materials smelted', 95000,
+    item => IRON_FUEL_NAMES.has(item.name)),
+  starterGear: prepareStarterGear,
+  mine: async objective => {
+    if (mineNeedsNewGround) {
+      mineNeedsNewGround = false
+      const y = Math.floor(bot.entity.position.y)
+      const floor = objective.kind === 'redstone' ? 8 : objective.kind === 'iron' ? 28 : null
+      const riseToStone = objective.kind === 'stone' && objective.names[0] === 'cobblestone' &&
+        objective.names.length === 1 && y < 8
+      if (riseToStone || (floor !== null && y > floor + 2)) {
+        const targetY = riseToStone ? Math.min(8, y + 8) : Math.max(floor, y - 8)
+        baseProspecting = true
+        try {
+          if (await gotoWithTimeout(new goals.GoalY(targetY), 'base prospecting', 12000)
+            .then(() => true, () => false)) return
+        } finally {
+          baseProspecting = false
+        }
+      }
+      if (!canWorkHere(bot) || closeCombatPlan()) return
+      await exploreOneStep()
+      return
+    }
+    await mineForGear(null, objective.kind, null, objective)
+  },
+})
 // When set, the swim controller heads for this far shore instead of the
 // nearest ledge (used to leave a platform the bot built in the sea).
 let swimOverride = null
@@ -157,6 +205,8 @@ const DEFAULT_MINE_TARGET_NAMES = new Set([
 ])
 let mineTargetNames = new Set(DEFAULT_MINE_TARGET_NAMES)
 let currentMineOrder = null
+let baseMineObjective = null
+let baseProspecting = false
 let lastMineAudit = null
 let committedMineTarget = null
 const mineBlacklist = new Map()
@@ -373,6 +423,7 @@ function startDashboard() {
         version: bot?.version || VERSION,
         botConnected: Boolean(bot?.entity),
         botEnabled,
+        supplyBase: supplyBase.status(),
         navigation: visibleNavigationState(),
         deathPoint: deathPoint && !deathPoint.done
           ? { x: deathPoint.x, y: deathPoint.y, z: deathPoint.z, attempts: deathPoint.attempts, ageSeconds: Math.round((Date.now() - deathPoint.diedAt) / 1000) }
@@ -618,6 +669,10 @@ async function recoverFoodSupply() {
   const connection = bot
   lastDecision = 'hunt-food'
   log('food recovery priority', { food: connection.food, target: committedMineTarget?.position ?? null })
+  if (!foodReserve() && await supplyBase.recoverFood(connection) && !foodRecoveryNeeded(connection)) {
+    log('food recovery complete', { food: connection.food, source: 'supply-base' })
+    return
+  }
   if (!await huntNearbyAnimalsOrForage() && foodRecoveryNeeded(connection) &&
       canWorkHere(connection) && !closeCombatPlan()) {
     if (nightShelterTerrain() === 'covered') {
@@ -632,6 +687,9 @@ async function recoverFoodSupply() {
 }
 
 function computeStage(s) {
+  if (supplyBase.active(bot)) {
+    return { name: 'supply_base', hint: '建立并维护补给基地和红石工坊', allowed: null }
+  }
   if (isNightShelterTime(s.timeOfDay) && s.nightShelterTerrain === 'open' &&
       (nightsSheltered < 1 || !s.hasSword)) {
     return { name: 'first_night', hint: '天黑了：做床睡觉，没有床就挖三格深的坑并封住头顶，等天亮', allowed: null }
@@ -1593,8 +1651,9 @@ function discardCandidates(connection, window, keep) {
   const reserves = INVENTORY_RESERVES.map(([names, minimum]) => ({ names, minimum,
     count: items.reduce((total, item) => total + (names.has(item.name) ? item.count : 0), 0) }))
   const equipment = connection.inventory.slots.filter(Boolean)
+  const reservingBaseGear = supplyBase.active(connection)
   const obsolete = item => {
-    if (item.enchants?.length) return false
+    if (item.enchants?.length || (reservingBaseGear && supplyBase.keeps(item))) return false
     const [material, type] = item.name.split('_')
     const armorIndex = ARMOR_SLOTS.findIndex(([, kind]) => kind === type)
     if (armorIndex >= 0 && ARMOR_DEFENSE[material]) {
@@ -2026,7 +2085,7 @@ async function ensureFurnace(stations = null) {
   if (!canWorkHere(connection)) return null
   if (!stations) {
     const existing = findNearestBlock(FURNACE_NAMES, 4)
-    if (furnaceReachable(connection, existing)) return existing
+    if (furnaceReachable(connection, existing) && !supplyBase.owns(connection, existing.position)) return existing
     if (temporaryFurnace) return null
   }
   // A furnace broken without a pickaxe will not drop as an item.
@@ -3127,8 +3186,14 @@ function planMineTarget() {
 async function minePlannerTick(reason = 'tick') {
   if (!mineMode || mineBusy || busy || !botEnabled || !bot?.entity || !movements) return false
   if (emergencyRetreating || fleeingActive || waterOwnsMovement() || foodRecoveryNeeded() || bot.health <= 0) return false
+  if (supplyBase.active(bot) && currentMineOrder?.source !== 'base') {
+    finishMineObjective()
+    void decideAndAct('mine-complete')
+    return false
+  }
   if (Date.now() < nextMineSearchAt) return false
-  if (Date.now() >= nextGearCraftRetryAt && readyGearUpgrades().length && !closeCombatPlan()) {
+  if (currentMineOrder?.source !== 'base' &&
+      Date.now() >= nextGearCraftRetryAt && readyGearUpgrades().length && !closeCombatPlan()) {
     void decideAndAct('gear-ready')
     return false
   }
@@ -3221,9 +3286,7 @@ async function minePlannerTick(reason = 'tick') {
       /^(deepslate_)?lapis_ore$/.test(current.name) ? new Set(['lapis_lazuli']) :
       /^(deepslate_)?emerald_ore$/.test(current.name) ? new Set(['emerald']) : new Set([current.name])
     const before = inventoryCount(drops)
-    const countedDiamond = drops.has('diamond') && ARMOR_SLOTS.every(([slot, type]) =>
-      /^(diamond|netherite)_/.test(bot.inventory.slots[bot.getEquipmentDestSlot(slot)]?.name ?? '') &&
-      bot.inventory.slots[bot.getEquipmentDestSlot(slot)]?.name.endsWith(`_${type}`))
+    const countedDiamond = drops.has('diamond') && hasDiamondArmor(bot)
     await maybePlaceTorch(true)
     if (interrupted()) return false
     if (!await digWithExposure(current, mineTargetNames)) {
@@ -3267,6 +3330,15 @@ async function minePlannerTick(reason = 'tick') {
 
 function finishMineObjective() {
   if (!mineMode || !bot?.entity || !mineTargetNames.size) return false
+  if (supplyBase.active(bot)) {
+    const objective = currentMineOrder?.source === 'base' ? baseMineObjective : null
+    if (objective && Date.now() < objective.until && foodReserve() >= 3 &&
+        inventoryCount(new Set(objective.names)) < objective.target) return false
+    mineMode = false
+    committedMineTarget = null
+    activeGoal = null
+    return true
+  }
   const targets = [...mineTargetNames]
   const coal = inventoryItemCount('coal')
   const fuel = coal + inventoryItemCount('charcoal')
@@ -3304,17 +3376,21 @@ function recordMineAudit(result, block = null) {
   }[result] })
 }
 
-async function mineForGear(modelTarget = null, targetName = '', requested = null) {
+async function mineForGear(modelTarget = null, targetName = '', requested = null, objective = null) {
   if (foodRecoveryNeeded()) return false
   if (!bot.inventory.items().some(item => item.name.endsWith('_pickaxe'))) {
     log('mining refused; no pickaxe equipped or available')
     persistExperience({ cycle, action: 'mine-blocked', experience: '没有镐，禁止进入挖矿执行器' })
     return false
   }
-  const targets = mineTargetSetFromName(targetName)
+  const targets = objective?.kind === 'stone' && objective.names.length === 1
+    ? new Set([objective.names[0] === 'cobbled_deepslate' ? 'deepslate' : 'stone'])
+    : mineTargetSetFromName(targetName)
   if (committedMineTarget && !targets.has(committedMineTarget.block.name)) committedMineTarget = null
   mineTargetNames = targets
-  currentMineOrder = { cycle, requested, target: targetName || 'general', source: requested ? 'model' : 'survival' }
+  baseMineObjective = objective
+  currentMineOrder = { cycle, requested, target: targetName || 'general',
+    source: objective ? 'base' : requested ? 'model' : 'survival' }
   mineMode = mineTargetNames.size > 0
   recordMineAudit(mineMode ? 'command' : 'invalid-target')
   if (!mineMode) return false
@@ -3490,6 +3566,7 @@ async function clearBlockerFor(target) {
   const hit = connection.world.raycast(eyes, ray.unit(), range)
   const blocker = hit ? connection.blockAt(hit.position ?? hit) : null
   if (!blocker || blocker.position.equals(target.position)) return false
+  if (supplyBase.owns(connection, blocker.position)) return false
   if (mineBusy && isOreName(blocker.name)) return false
   if (!TUNNEL_SAFE_BLOCKS.has(blocker.name) || !connection.canDigBlock(blocker)) return false
   // Never dig out the block under the bot's feet.
@@ -4562,6 +4639,13 @@ function equippedArmorCount() {
     .filter(item => /_(helmet|chestplate|leggings|boots)$/.test(item?.name || '')).length
 }
 
+function hasDiamondArmor(connection) {
+  return ARMOR_SLOTS.every(([slot, type]) => {
+    const name = connection.inventory.slots[connection.getEquipmentDestSlot(slot)]?.name ?? ''
+    return name === `diamond_${type}` || name === `netherite_${type}`
+  })
+}
+
 function hostileName(entity) {
   return String(entity.name || entity.displayName || '').toLowerCase().replaceAll(' ', '_')
 }
@@ -4606,7 +4690,7 @@ async function decideAndAct(trigger = 'scheduled') {
     return
   }
 
-  if (!immediate && resupplyAfterDiamonds && !emergencyShelteredUntil && !shelteredUntilDawn &&
+  if (!immediate && resupplyAfterDiamonds && !supplyBase.active(bot) && !emergencyShelteredUntil && !shelteredUntilDawn &&
       !(deathPoint && !deathPoint.done)) {
     if (busy || mineBusy || isEating || isSmelting || isDiggingBlock || shelterBusy) return
     mineMode = false
@@ -4659,7 +4743,7 @@ async function decideAndAct(trigger = 'scheduled') {
 
   // Defer non-urgent decisions if in active mineMode with working tools
   if (mineMode && !busy && !mineBusy) finishMineObjective()
-  if (!immediate && !busy && !mineBusy && !isSmelting && !isEating && !isDiggingBlock &&
+  if (!immediate && !supplyBase.active(bot) && !busy && !mineBusy && !isSmelting && !isEating && !isDiggingBlock &&
       !bot?.targetDigBlock && !(deathPoint && !deathPoint.done) && !shelteredUntilDawn && !emergencyShelteredUntil &&
       Date.now() >= nextGearCraftRetryAt && canWorkHere(bot)) {
     if (readyGearUpgrades().length) {
@@ -4683,6 +4767,7 @@ async function decideAndAct(trigger = 'scheduled') {
       return
     }
   }
+  if (supplyBase.active(bot) && !busy && !mineBusy) activeGoal = null
 
   // TASK COMMITMENT PROTECTION:
   // If we have an active ongoing goal, do NOT let scheduled ticks re-query DeepSeek or thrash actions!
@@ -4830,6 +4915,13 @@ async function decideAndAct(trigger = 'scheduled') {
     const stage = computeStage(state)
     state.stage = stage.name
     state.stageHint = stage.hint
+    if (stage.name === 'supply_base' && !closeCombatPlan() && canWorkHere(bot)) {
+      lastDecision = 'supply-base'
+      resupplyAfterDiamonds = false
+      diamondsSinceArmor = 0
+      await supplyBase.run(bot)
+      return
+    }
     const upgrade = nextIronUpgrade()
     const ironReady = state.rawIron > 0 && state.coal + state.charcoal > 0 &&
       (!upgrade || state.rawIron + inventoryItemCount('iron_ingot') >= upgrade.cost)
@@ -5204,7 +5296,7 @@ function createBotConnection() {
     mcData = minecraftData(connection.version)
     movements = new Movements(connection, mcData)
     movements.canDig = true
-    movements.exclusionAreasBreak.push(() => mineBusy || surfaceRouteActive ? 0 : 100)
+    movements.exclusionAreasBreak.push(() => mineBusy || surfaceRouteActive || baseProspecting ? 0 : 100)
     movements.allow1by1towers = true
     movements.allowParkour = true
     movements.placeCost = 2.5
@@ -5219,6 +5311,7 @@ function createBotConnection() {
     movements.exclusionAreasStep.push(block => (block && WATER_BLOCK_NAMES.has(block.name) ? 500 : 0))
     movements.exclusionAreasStep.push(block => discardTileCost(connection, block))
     movements.blocksCantBreak.add(mcData.blocksByName[TABLE_NAME].id)
+    movements.exclusionAreasBreak.push(block => supplyBase.owns(connection, block?.position) ? Infinity : 0)
     for (const block of mcData.blocksArray) {
       if (LOG_NAMES.has(block.name) || isOreName(block.name)) movements.blocksCantBreak.add(block.id)
     }
