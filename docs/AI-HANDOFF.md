@@ -7,10 +7,23 @@
 | 需要处理的内容 | 入口 |
 | --- | --- |
 | 启动与配置 | [README](../README.md)、[环境变量模板](../.env.example)、[服务端配置模板](../server.properties.example) |
-| Bot 生命周期、DeepSeek、寻路和本地策略 | [`agent.js`](../agent.js) |
+| Bot 启动、连接与功能装配 | [`agent.js`](../agent.js)、[`runtime.js`](../agent/runtime.js)、[`lifecycle.js`](../agent/lifecycle.js) |
+| 任务优先级、装备阶段与钻石里程碑 | [`scheduler.js`](../agent/scheduler.js)、[`progression.js`](../agent/progression.js)、[`base-progression.js`](../agent/base-progression.js) |
+| DeepSeek 决策与 Token、经验和日志 | [`model.js`](../agent/model.js)、[`logging.js`](../agent/logging.js) |
+| 地形判断、寻路、水中移动和树冠脱困 | [`world.js`](../agent/world.js)、[`navigation.js`](../agent/navigation.js)、[`swimming.js`](../agent/swimming.js)、[`canopy.js`](../agent/canopy.js) |
+| 采矿目标、挖掘动作与采木 | [`mining.js`](../agent/mining.js)、[`digging.js`](../agent/digging.js)、[`wood.js`](../agent/wood.js) |
+| 背包、工具和护甲、合成与熔炼 | [`inventory.js`](../agent/inventory.js)、[`equipment.js`](../agent/equipment.js)、[`crafting.js`](../agent/crafting.js)、[`smelting.js`](../agent/smelting.js) |
+| 战斗、撤退、盾牌与来箭格挡 | [`combat.js`](../agent/combat.js)、[`combat-defence.js`](../agent/combat-defence.js) |
+| 食物、夜间避难和死亡掉落 | [`food.js`](../agent/food.js)、[`shelter.js`](../agent/shelter.js)、[`death-recovery.js`](../agent/death-recovery.js) |
+| 5×5 施工、NBT 导入、基地与红石工坊 | [`construction.js`](../agent/construction.js)、[`supply-station.js`](../supply-station.js)、[`structure-nbt.js`](../structure-nbt.js)、[`supply-base.js`](../supply-base.js) |
+| 网页面板、HTTP 接口、观测数据 | [`dashboard.html`](../agent/dashboard.html)、[`dashboard.js`](../agent/dashboard.js)、[`telemetry.js`](../agent/telemetry.js) |
 | 原生 HUD、线路、目标和背包 | [`ObserverHud.java`](../observer-mod/src/main/java/com/nmo/agentobserver/ObserverHud.java)、[`ObserverFrame.java`](../observer-mod/src/main/java/com/nmo/agentobserver/ObserverFrame.java)、[`AgentObserverClient.java`](../observer-mod/src/main/java/com/nmo/agentobserver/AgentObserverClient.java) |
 | 精简运行快照 | [`Get-NmoTelemetry.ps1`](../scripts/Get-NmoTelemetry.ps1)、[原版遥测数据包](../datapacks/nmo-telemetry/README.md) |
 | 已实现和实测范围 | [更新日志](../CHANGELOG.md)、[前期生存流程](../early-game-flow.md) |
+
+## 并行编辑
+
+同一分支基础上各开一个功能分支。改战斗时从 `combat.js` 或 `combat-defence.js` 开始，改基地和自动熔炉时从 `supply-base.js` 开始。功能内部的小函数和临时状态放回该模块。模块通过 `features` 调用其他模块公开的动作，跨功能共享的数据在 `agent/state.js`，共享常量和连接参数在 `agent/config.js`。增加模块才需在 `runtime.js` 装配同名工厂。涉及优先级或共享状态的改动在合并时一起核对。提交前运行 `npm run test:syntax`，它会检查入口及每个功能模块。
 
 ## 运行环境
 
