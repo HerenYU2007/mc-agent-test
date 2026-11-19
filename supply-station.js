@@ -54,7 +54,7 @@ function solidGround(block) {
     block.getProperties().waterlogged !== true
 }
 
-function siteAt(bot, center, size) {
+function siteAt(bot, center, size, allowSite) {
   if (!solidGround(bot.blockAt(center.offset(0, -1, 0)))) return null
   const supports = []
   const [width, height, depth] = size
@@ -78,19 +78,21 @@ function siteAt(bot, center, size) {
     for (const offset of [0, 1]) {
       const feet = outside.offset(0, offset, 0)
       if (solidGround(bot.blockAt(feet.offset(0, -1, 0))) && AIR.has(bot.blockAt(feet)?.name) &&
-          AIR.has(bot.blockAt(feet.plus(UP))?.name)) return { center, front, entry: feet, supports, dimension: bot.game.dimension }
+          AIR.has(bot.blockAt(feet.plus(UP))?.name)) {
+        const site = { center, front, entry: feet, supports, dimension: bot.game.dimension }
+        if (!allowSite || allowSite(site)) return site
+      }
     }
   }
   return null
 }
 
-function findSite(bot, size) {
-  const origin = bot.entity.position.floored()
+function findSite(bot, size, origin = bot.entity.position.floored(), allowSite) {
   const candidates = []
   for (let x = -16; x <= 16; x += 2) {
     for (let z = -16; z <= 16; z += 2) {
       for (const y of [0, -1, 1, -2, 2, -3, 3]) {
-        const site = siteAt(bot, origin.offset(x, y, z), size)
+        const site = siteAt(bot, origin.offset(x, y, z), size, allowSite)
         if (site) candidates.push(site)
       }
     }
@@ -143,8 +145,9 @@ function vector({ x, y, z }) {
 }
 
 class SupplyStation {
-  constructor(stateFile, requested, schematicFile, hut = false, hutFile) {
+  constructor(stateFile, requested, schematicFile, hut = false, hutFile, { progress, saveProgress } = {}) {
     this.stateFile = stateFile
+    this.saveProgress = saveProgress
     hut ||= Boolean(hutFile)
     if (hut && schematicFile) throw new Error('生存小屋与外部 NBT 蓝图需分别启动')
     this.hut = hut
@@ -158,8 +161,8 @@ class SupplyStation {
     this.worked = 0
     this.cells = []
     this.failedCells = new Map()
-    if (stateFile && fs.existsSync(stateFile)) {
-      const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
+    const data = progress ?? (stateFile && fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : null)
+    if (data) {
       if (data.version !== 1) throw new Error('Unsupported supply station state version')
       if ((data.schematicId ?? null) !== this.blueprintId) throw new Error('蓝图已变更，请使用该图纸专用的进度文件')
       this.site = { ...data.site, center: vector(data.site.center), front: vector(data.site.front), entry: vector(data.site.entry) }
@@ -205,12 +208,15 @@ class SupplyStation {
   }
 
   save() {
+    if (!this.stateFile && !this.saveProgress) return
+    const data = { version: 1, site: this.site, worked: this.worked,
+      completed: this.completed, roofStep: this.roofStep, schematicId: this.blueprintId,
+      spawnSet: this.spawnSet, glassPrepared: this.glassPrepared }
+    if (this.saveProgress) this.saveProgress(data)
     if (!this.stateFile) return
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true })
     const temp = this.stateFile + '.tmp'
-    fs.writeFileSync(temp, JSON.stringify({ version: 1, site: this.site, worked: this.worked,
-      completed: this.completed, roofStep: this.roofStep, schematicId: this.blueprintId,
-      spawnSet: this.spawnSet, glassPrepared: this.glassPrepared }) + '\n')
+    fs.writeFileSync(temp, JSON.stringify(data) + '\n')
     fs.renameSync(temp, this.stateFile)
   }
 
@@ -222,10 +228,10 @@ class SupplyStation {
 
   async selectSite(bot, work) {
     this.phase = '选址'
-    for (const site of findSite(bot, this.size)) {
+    for (const site of findSite(bot, this.size, work.siteOrigin, work.allowSite)) {
       if (!work.ready()) return
       const arrived = await work.walk(new goals.GoalBlock(site.entry.x, site.entry.y, site.entry.z), 5000)
-      if (!arrived || !work.ready()) continue
+      if (!arrived || !work.ready() || !site.entry.equals(bot.entity.position.floored())) continue
       this.site = site
       this.cells = this.cellsForSite()
       this.save()

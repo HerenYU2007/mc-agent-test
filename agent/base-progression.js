@@ -73,18 +73,19 @@ function createBaseProgression(runtimeState, features) {
       walking.scafoldingBlocks = []
       connection.pathfinder.setMovements(walking)
       try { await api.goto(goal, label, timeout) }
-      finally { if (connection === runtimeState.bot) connection.pathfinder.setMovements(runtimeState.movements) }
+      finally {
+        if (connection === runtimeState.bot) {
+          if (connection.pathfinder.goal === goal) connection.pathfinder.setGoal(null)
+          connection.pathfinder.setMovements(runtimeState.movements)
+        }
+      }
     }
     const work = { ...api, travel, pickup: features.pickUpBlockDrop, equipTool: features.equipBestToolFor }
     api.farm = createBaseFarm({ ...work, showAction: action => { runtimeState.lastDecision = action } })
     api.expedition = createVillageExpedition({
       ...work,
       statePath: process.env.MC_EXPEDITION_STATE_PATH || `${api.statePath}.expedition.jsonl`,
-      acquireBed: async () => {
-        if (await features.acquireShelterBed()) return true
-        if (api.safe(runtimeState.bot)) await features.exploreOneStep()
-        return false
-      },
+      buildShelter: features.buildSupplyStation,
       regear: async () => {
         await features.craftAvailableGear()
         await features.autoEquipArmor()

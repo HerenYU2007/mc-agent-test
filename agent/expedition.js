@@ -2,7 +2,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
-const { createExpeditionShelter, shelterGeometry } = require('./expedition-shelter')
+const { createExpeditionShelter } = require('./expedition-shelter')
 const { createVillageVisit } = require('./expedition-village')
 
 const DIRECTIONS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]
@@ -45,6 +45,7 @@ function createVillageExpedition(api) {
     if (saved.version === 1 && saved.world === api.world && PHASES.has(saved.phase) && isPosition(saved.base)) {
       state = { ...state, ...saved, route: (saved.route || []).filter(isPosition), lastRoute: (saved.lastRoute || []).filter(isPosition),
         room: isPosition(saved.room) ? saved.room : null, spawn: isPosition(saved.spawn) ? saved.spawn : null,
+        legacyRoom: isPosition(saved.legacyRoom) ? saved.legacyRoom : null,
         village: isPosition(saved.village) ? saved.village : null,
         landmarks: (saved.landmarks || []).filter(mark => mark && isPosition(mark.position)), visited: (saved.visited || []).filter(isPosition) }
     }
@@ -280,19 +281,19 @@ function createVillageExpedition(api) {
     const ready = gear(bot)
     const needs = retreatReason(ready)
     if (needs === 'equipment-worn') {
-      await shelter.leave(bot, vector(state.room))
+      await shelter.leave(bot, state)
       await api.regear()
       update('awaiting-resupply', needs)
       return needs
     }
-    if (ready.torches < 16) { await shelter.leave(bot, vector(state.room)); return 'torches-low' }
-    if (ready.food < 8 || ready.hunger < 16) { await shelter.leave(bot, vector(state.room)); return 'food-low' }
+    if (ready.torches < 16) { await shelter.leave(bot, state); return 'torches-low' }
+    if (ready.food < 8 || ready.hunger < 16) { await shelter.leave(bot, state); return 'food-low' }
     if (!daylight(bot) || ready.health < 16 || Date.now() < state.nextAfter) {
-      await shelter.enter(bot, vector(state.room))
+      await shelter.enter(bot, state)
       update('awaiting-resupply', !daylight(bot) ? 'wait-for-daylight' : 'resting')
       return state.phase
     }
-    if (!await shelter.leave(bot, vector(state.room))) return 'shelter-doorway'
+    if (!await shelter.leave(bot, state)) return 'shelter-doorway'
     state.steps = 0
     state.entered = false
     if (state.village) state.visited = []
@@ -305,18 +306,11 @@ function createVillageExpedition(api) {
     return state.phase
   }
 
-  const owns = position => {
-    if (!state.room || !position) return false
-    const layout = shelterGeometry(vector(state.room))
-    return [...layout.shell, ...layout.lights, layout.door, layout.door.offset(0, 1, 0), layout.foot, layout.head]
-      .some(target => target.equals(position))
-  }
-
-  return { active, continueTrip, prepare, owns, inside: bot => Boolean(state.room && shelter.within(bot, vector(state.room))),
-    buildingShelter: () => Boolean(state.room && state.phase === 'preparing' &&
-      !['shelter-materials', 'shelter-needs-torches', 'shelter-acquiring-bed'].includes(state.reason)),
-    leave: bot => state.room ? shelter.leave(bot, vector(state.room)) : true,
+  return { active, continueTrip, prepare, owns: position => shelter.owns(state, position), inside: bot => shelter.within(bot, state),
+    buildingShelter: () => Boolean(state.hut && !state.hut.completed && state.phase === 'preparing'),
+    leave: bot => shelter.leave(bot, state),
     status: () => ({ phase: state.phase, reason: state.reason, room: state.room, spawn: state.spawn,
+      hut: shelter.status(state),
       village: state.village, villageAction: state.villageAction, landmarks: state.landmarks, route: state.route, lastRoute: state.lastRoute }) }
 }
 

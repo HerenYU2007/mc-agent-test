@@ -440,18 +440,22 @@ function createSupplyBase(api) {
     }
 
     async function runExpedition() {
-      const currentTable = blockFor(connection, 'table')
       const phase = await api.expedition.prepare(connection, anchor, {
-        collect: (...args) => collect(connection, ...args),
-        make: name => make(connection, name, currentTable),
+        occupied: position => {
+          const { x, y, z } = position.minus(anchor)
+          return (x >= -2 && x <= 3 && z >= -2 && z <= 2 && y >= -1 && y <= 4) ||
+            Boolean(farmCenter && Math.abs(position.x - farmCenter.x) <= 1 && Math.abs(position.z - farmCenter.z) <= 1 &&
+              Math.abs(position.y - farmCenter.y) <= 1)
+        },
       })
       setPhase(phase)
     }
 
     const inside = api.expedition?.inside(connection)
-    if (inside && api.expedition.status().spawn && !connection.isSleeping && api.farm?.hasWork(connection, farmCenter)) {
+    const buildingShelter = api.expedition?.buildingShelter()
+    if (inside && !buildingShelter && api.expedition.status().spawn && !connection.isSleeping && api.farm?.hasWork(connection, farmCenter)) {
       if (!await api.expedition.leave(connection)) return
-    } else if (inside || api.expedition?.buildingShelter()) {
+    } else if (inside || buildingShelter) {
       await runExpedition()
       return
     }

@@ -82,12 +82,14 @@ function createConstruction(runtimeState, features) {
       (block === 'planks' ? features.plankCount() : features.inventoryItemCount(block)) >= count)
   }
 
-  async function buildSupplyStation() {
+  async function buildSupplyStation(station = runtimeState.supplyStation, { siteOrigin, allowSite } = {}) {
     const connection = runtimeState.bot
     const ready = () => features.canWorkHere(connection) && !features.foodRecoveryNeeded(connection) &&
       !features.closeCombatPlan() && !features.damageInterruptActive(connection) && Date.now() >= runtimeState.retreatUntil
     if (!ready()) return
-    runtimeState.lastDecision = runtimeState.supplyStation.schematic || runtimeState.supplyStation.hut ? 'build-structure' : 'build-camp'
+    const action = station !== runtimeState.supplyStation ? 'build-expedition-hut' :
+      station.schematic || station.hut ? 'build-structure' : 'build-camp'
+    runtimeState.lastDecision = action
     const constructionMovement = new Movements(connection)
     constructionMovement.canDig = false
     constructionMovement.scafoldingBlocks = []
@@ -109,7 +111,7 @@ function createConstruction(runtimeState, features) {
       const target = goal.pos ?? goal
       if ([target.x, target.y, target.z].every(Number.isFinite)) {
         runtimeState.navigationState = { target: { x: target.x, y: target.y, z: target.z }, waypoints: [], label: 'build-structure' }
-        if (runtimeState.supplyStation.hut &&
+        if (station.hut &&
             Math.hypot(connection.entity.position.x - target.x, connection.entity.position.z - target.z) > 7) {
           crossingToShore = Boolean(features.preferSwimShoreNear(connection, target))
         }
@@ -158,21 +160,21 @@ function createConstruction(runtimeState, features) {
     connection.once('end', disconnected)
     const hutWork = {
       ready, walk, log: features.log, explore: features.exploreOneStep,
-      phase: phase => { runtimeState.supplyStation.phase = phase },
-      protected: position => runtimeState.supplyStation.protects(connection, position),
+      phase: phase => { station.phase = phase },
+      protected: position => station.protects(connection, position) || runtimeState.supplyBase.owns(connection, position),
     }
     try {
-      await Promise.race([connectionEnded, runtimeState.supplyStation.step(connection, { ready, walk, log: features.log, explore: features.exploreOneStep,
+      await Promise.race([connectionEnded, station.step(connection, { ready, walk, log: features.log, explore: features.exploreOneStep, siteOrigin, allowSite,
         prepareGlass: count => prepareHutGlass(connection, count, hutWork, features),
         materials: async (materials, hutSite) => {
           const remaining = hutSite ? await starterHutMaterials(connection, materials, hutWork, features) : materials
           return remaining ? supplyStationMaterials(connection, remaining, ready) : false
         }, dig: features.digWithExposure })])
     } catch (error) {
-      features.log('supply station step interrupted', { ...runtimeState.supplyStation.status(), message: error.message })
+      features.log('supply station step interrupted', { ...station.status(), message: error.message })
     } finally {
       connection.removeListener('end', disconnected)
-      if (!ready() && !runtimeState.mineMode) runtimeState.supplyStation.interrupt(features.log, 'survival priority')
+      if (!ready() && !runtimeState.mineMode) station.interrupt(features.log, 'survival priority')
     }
   }
 
