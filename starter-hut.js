@@ -27,8 +27,11 @@ function hutBlueprint(site) {
         add(`墙体第 ${y + 1} 层`, y ? MATERIAL.planks : 'cobblestone', x, y, z, { baseOnly: !(y === 2 && x === 0 && z === 2) })
       }
     }
+    // Set the windows while their sills are exposed. They support the upper wall.
+    if (y === 1) {
+      for (const x of [-2, 2]) add('玻璃窗', 'glass', x, y, 0, { baseOnly: true })
+    }
   }
-  for (const x of [-2, 2]) add('玻璃窗', 'glass', x, 1, 0, { baseOnly: true })
   for (const ring of roofRings) {
     for (let x = -ring; x <= ring; x++) {
       for (let z = -ring; z <= ring; z++) {

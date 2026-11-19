@@ -15,8 +15,14 @@ const STATION_SIZE = [5, 4, 5]
 
 class StationPlacementGoal extends goals.GoalPlaceBlock {
   constructor(bot, cell) {
-    super(cell.position, bot.world, { range: 4.25, half: cell.half,
-      faces: cell.faces ?? (cell.baseOnly ? [UP.scaled(-1)] : undefined) })
+    const below = UP.scaled(-1)
+    const faces = cell.faces ?? (cell.baseOnly ? [below] : undefined)
+    super(cell.position, bot.world, { range: 4.25, half: cell.half, faces })
+    // Clicking the top of the block below always places a bottom slab.
+    if (cell.half === 'bottom' && (!faces || faces.some(face => face.equals(below)))) {
+      const fromBelow = new goals.GoalPlaceBlock(cell.position, bot.world, { faces: [below] })
+      this.facesPos = [...fromBelow.facesPos, ...this.facesPos.filter(([face]) => !face.equals(below))]
+    }
     this.facesPos = this.facesPos.flatMap(([face, point, reference]) => {
       const center = [face, point, reference]
       if (!solidGround(bot.blockAt(reference))) return [center]
