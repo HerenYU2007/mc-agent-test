@@ -7,13 +7,17 @@ const CONVERTED = { wooden_slab: '_slab', wooden_door: '_door' }
 
 async function collectSand(bot, work, features) {
   const ids = [...SAND].map(name => bot.registry.blocksByName[name]?.id).filter(Number.isInteger)
-  const positions = bot.findBlocks({ matching: ids, maxDistance: 64, count: 192 })
+  const maxDistance = Math.ceil(((bot.game.serverViewDistance ?? 8) + 1) * 16 * Math.SQRT2)
+  const exposed = block => {
+    const above = bot.blockAt(block.position.offset(0, 1, 0))
+    return above && !above.shapes?.length && !/water|lava/.test(above.name)
+  }
+  const positions = bot.findBlocks({ matching: ids, maxDistance, count: 96, useExtraInfo: exposed })
   for (const position of positions) {
     if (!work.ready()) return false
     if (work.protected(position)) continue
     let block = bot.blockAt(position)
-    const above = bot.blockAt(position.offset(0, 1, 0))
-    if (!SAND.has(block?.name) || !above || above.shapes?.length || /water|lava/.test(above.name)) continue
+    if (!SAND.has(block?.name) || !exposed(block)) continue
     if ((!bot.canDigBlock(block) || !bot.canSeeBlock(block)) &&
         !await work.walk(new goals.GoalLookAtBlock(position, bot.world, { reach: 4 }), 11000)) continue
     block = bot.blockAt(position)

@@ -94,6 +94,7 @@ function createConstruction(runtimeState, features) {
     constructionMovement.allow1by1towers = false
     constructionMovement.allowParkour = false
     constructionMovement.maxDropDown = 2
+    let crossingToShore = false
     const now = Date.now()
     for (const [key, until] of stationBlockedSteps) {
       if (until <= now) stationBlockedSteps.delete(key)
@@ -101,13 +102,17 @@ function createConstruction(runtimeState, features) {
     constructionMovement.exclusionAreasStep.push(block => {
       if (!block?.position) return 0
       const key = `${block.position.x},${block.position.z}`
-      return features.isWaterBlock(block) || stationBlockedSteps.has(key) ? 100 : 0
+      return (!crossingToShore && features.isWaterBlock(block)) || stationBlockedSteps.has(key) ? 100 : 0
     })
     const walk = async (goal, timeout) => {
       if (!ready()) return false
       const target = goal.pos ?? goal
       if ([target.x, target.y, target.z].every(Number.isFinite)) {
         runtimeState.navigationState = { target: { x: target.x, y: target.y, z: target.z }, waypoints: [], label: 'build-structure' }
+        if (runtimeState.supplyStation.hut &&
+            Math.hypot(connection.entity.position.x - target.x, connection.entity.position.z - target.z) > 7) {
+          crossingToShore = Boolean(features.preferSwimShoreNear(connection, target))
+        }
       }
       connection.pathfinder.setMovements(constructionMovement)
       let lastPosition = connection.entity.position.clone()
@@ -139,6 +144,7 @@ function createConstruction(runtimeState, features) {
       } catch {
         return false
       } finally {
+        crossingToShore = false
         clearInterval(watch)
         if (connection === runtimeState.bot) connection.pathfinder.setMovements(runtimeState.movements)
       }

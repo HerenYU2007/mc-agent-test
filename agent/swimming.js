@@ -15,10 +15,12 @@ function createSwimming(runtimeState, features) {
   let swimOverride = null
 
   let swimOverrideUntil = 0
+  let swimOverrideConnection = null
 
   let lastStrandCheckAt = 0
 
   let lastSwimLogAt = 0
+  let lastLanding = null
 
   function waterSurfaceY(connection, origin) {
     let surface = origin.y
@@ -154,6 +156,38 @@ function createSwimming(runtimeState, features) {
     return null
   }
 
+  function preferSwimShoreNear(connection, destination) {
+    if (connection !== runtimeState.bot || !connection?.entity ||
+        ![destination?.x, destination?.y, destination?.z].every(Number.isFinite)) return null
+    const center = new Vec3(destination.x, destination.y, destination.z).floored()
+    const candidates = []
+    for (let x = -14; x <= 14; x++) {
+      for (let z = -14; z <= 14; z++) {
+        if (Math.hypot(x, z) > 14) continue
+        for (let y = -9; y <= 3; y++) {
+          const feet = center.offset(x, y, z)
+          if (!features.walkableAt(feet.x, feet.y, feet.z)) continue
+          const adjoinsWater = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) =>
+            [-1, -2].some(dy => {
+              const water = feet.offset(dx, dy, dz)
+              return features.isWaterBlock(connection.blockAt(water)) &&
+                connection.blockAt(water.offset(0, 1, 0))?.boundingBox === 'empty' &&
+                connection.blockAt(water.offset(0, 2, 0))?.boundingBox === 'empty'
+            }))
+          if (adjoinsWater) candidates.push(feet)
+        }
+      }
+    }
+    candidates.sort((left, right) => left.distanceTo(center) - right.distanceTo(center))
+    const shore = candidates.slice(0, 20).find(feet => dryComponent(feet, 16).size >= 8)
+    if (!shore || shore.distanceTo(connection.entity.position) < 3) return null
+    swimOverride = shore
+    swimOverrideConnection = connection
+    swimOverrideUntil = Date.now() + 45000
+    features.log('swim destination shore planned', { target: center, shore })
+    return shore
+  }
+
   // Standing on a tiny patch (e.g. a platform built over the sea): swim to real land.
   async function escapeIfStranded() {
     if (!runtimeState.bot?.entity || waterOwnsMovement() || swimOverride || runtimeState.emergencyRetreating) return false
@@ -184,6 +218,7 @@ function createSwimming(runtimeState, features) {
     features.log('stranded on a small platform; swimming to mainland', { platformSize: platform.size, shore })
     features.persistExperience({ cycle: runtimeState.cycle, action: 'escape-platform', experience: '站在海中的小平台上，寻路不下水会原地踏步；改为游向真正的陆地' })
     swimOverride = new Vec3(shore.x, shore.y, shore.z)
+    swimOverrideConnection = runtimeState.bot
     swimOverrideUntil = Date.now() + 90000
     runtimeState.mineMode = false
     features.stopPathfinder()
@@ -211,13 +246,35 @@ function createSwimming(runtimeState, features) {
     if (!runtimeState.botEnabled || !runtimeState.bot?.entity || runtimeState.bot.health <= 0) return
     const now = Date.now()
     const inWater = isActuallyInWater()
+    if (swimOverride && (swimOverrideConnection !== runtimeState.bot || now > swimOverrideUntil)) swimOverride = null
     if (!inWater) {
-      if (!runtimeState.swimmingMode) return
+      if (!runtimeState.swimmingMode) {
+        if (swimOverride && runtimeState.bot.entity.position.distanceTo(swimOverride) <= 3) swimOverride = null
+        return
+      }
       // Jumping against the shore keeps onGround flickering. Count the bot as
       // standing when it is on the ground or a solid block is directly below,
       // so control is handed back instead of idling in swim-ashore.
       const below = runtimeState.bot.blockAt(runtimeState.bot.entity.position.floored().offset(0, -1, 0))
       const standing = runtimeState.bot.entity.onGround || below?.boundingBox === 'block'
+      if (swimOverride) {
+        const connection = runtimeState.bot
+        const delta = swimOverride.offset(0.5, 0, 0.5).minus(connection.entity.position)
+        const distance = Math.hypot(delta.x, delta.z)
+        if (distance > 4) {
+          const next = connection.entity.position.offset(delta.x * 0.8 / distance, 0, delta.z * 0.8 / distance).floored()
+          const floor = connection.blockAt(next.offset(0, -1, 0))
+          const step = connection.blockAt(next)
+          if (floor?.boundingBox === 'block' || features.isWaterBlock(floor) || features.isWaterBlock(step)) {
+            swimDrySince = 0
+            connection.setControlState('forward', true)
+            connection.setControlState('sprint', true)
+            connection.setControlState('jump', step?.boundingBox === 'block')
+            void connection.look(Math.atan2(-delta.x, -delta.z), 0, true).catch(() => {})
+            return
+          }
+        }
+      }
       if (standing) swimDrySince ||= now
       else swimDrySince = 0
       if (swimDrySince) {
@@ -237,6 +294,7 @@ function createSwimming(runtimeState, features) {
           if (reached) swimOverride = null
         }
         runtimeState.landedAt = Date.now()
+        lastLanding = { connection: runtimeState.bot, feet: runtimeState.bot.entity.position.floored() }
         setImmediate(() => void features.decideAndAct('landed'))
       } else {
         runtimeState.bot.setControlState('jump', false)
@@ -254,6 +312,18 @@ function createSwimming(runtimeState, features) {
       runtimeState.bot.clearControlStates()
       features.clearNavigation('swimming')
       features.log('entered water; fast swim controller enabled', { oxygen: runtimeState.bot.oxygenLevel })
+      if (!swimOverride && lastLanding?.connection === runtimeState.bot && now - runtimeState.landedAt < 7000 &&
+          runtimeState.bot.entity.position.distanceTo(lastLanding.feet) < 4) {
+        const platform = dryComponent(lastLanding.feet, 40)
+        runtimeState.swimFailedShore = lastLanding.feet
+        const shore = findMainlandShore(platform) ?? findNearestLandForSwimming(32)
+        if (shore) {
+          swimOverride = new Vec3(shore.x, shore.y, shore.z)
+          swimOverrideConnection = runtimeState.bot
+          swimOverrideUntil = now + 45000
+          features.log('swim seeking alternate land after repeated entry', { previous: lastLanding.feet, shore: swimOverride })
+        }
+      }
     }
 
     const oxygen = Number(runtimeState.bot.oxygenLevel ?? 20)
@@ -288,7 +358,6 @@ function createSwimming(runtimeState, features) {
       runtimeState.swimShore = null
       runtimeState.swimProgress = null
     }
-    if (swimOverride && now > swimOverrideUntil) swimOverride = null
     if (swimOverride) {
       // Heading for the mainland: skip the progress-based shore swap so it does
       // not turn back to the platform it just left.
@@ -326,6 +395,7 @@ function createSwimming(runtimeState, features) {
   return {
     isActuallyInWater,
     waterOwnsMovement,
+    preferSwimShoreNear,
     escapeIfStranded,
     monitorSwimming,
   }
