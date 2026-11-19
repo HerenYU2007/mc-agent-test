@@ -39,7 +39,7 @@ function createConstruction(runtimeState, features) {
     }
     const chestNeeded = materials.chest && !features.inventoryItemCount('chest')
     const furnaceNeeded = materials.furnace && !features.inventoryItemCount('furnace')
-    const torchNeeded = materials.torch && !features.inventoryItemCount('torch')
+    const torchNeeded = materials.torch > features.inventoryItemCount('torch')
     const tableNeeded = materials.crafting_table && !features.inventoryItemCount('crafting_table')
     if (furnaceNeeded && features.inventoryCount(STONE_DROPS) < 8) {
       await gatherStationStone(8, ready)

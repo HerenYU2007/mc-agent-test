@@ -60,9 +60,11 @@ async function starterHutMaterials(bot, materials, work, features) {
         }
         name = wool.name.replace(/_wool$/, '_bed')
       } else {
-        const wood = items().find(item => item.name.endsWith('_planks') && features.inventoryItemCount(item.name) >= 3)
+        const needed = material === 'wooden_door' ? 6 : 3
+        const wood = items().find(item => item.name.endsWith('_planks') && features.inventoryItemCount(item.name) >= needed)
         if (!wood) {
-          if (!await features.makePlanksFor(4)) await features.collectWoodWithPlan()
+          const preferred = items().find(item => item.name.endsWith('_planks'))?.name
+          if (!await features.makePlanksFor(needed, preferred)) await features.collectWoodWithPlan()
           return null
         }
         name = wood.name.replace(/_planks$/, CONVERTED[material])
@@ -85,8 +87,9 @@ async function starterHutMaterials(bot, materials, work, features) {
       await features.prepareStarterGear()
       return null
     }
-    if (!items().some(item => ['coal', 'charcoal'].includes(item.name)) && features.plankCount() < 2) {
-      if (!await features.makePlanksFor(2)) await features.collectWoodWithPlan()
+    const planksForFuel = Math.ceil(missingGlass * 10 / 15)
+    if (!items().some(item => ['coal', 'charcoal'].includes(item.name)) && features.plankCount() < planksForFuel) {
+      if (!await features.makePlanksFor(planksForFuel)) await features.collectWoodWithPlan()
       return null
     }
     await features.processFurnaceBatch(SAND, 'starter hut glass collected', 30000,
