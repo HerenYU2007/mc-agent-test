@@ -146,7 +146,11 @@ function createConstruction(runtimeState, features) {
       } finally {
         crossingToShore = false
         clearInterval(watch)
-        if (connection === runtimeState.bot) connection.pathfinder.setMovements(runtimeState.movements)
+        if (connection === runtimeState.bot) {
+          // An empty path can leave the goal active even after goto resolves.
+          if (connection.pathfinder.goal === goal) connection.pathfinder.setGoal(null)
+          connection.pathfinder.setMovements(runtimeState.movements)
+        }
       }
     }
     let disconnected

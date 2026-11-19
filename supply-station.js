@@ -311,6 +311,8 @@ class SupplyStation {
       if (this.hut) {
         if ((phase === '墙体第 3 层' || phase === '屋顶') && !await this.climbHutPlatform(bot, work)) return
         if (phase === '屋顶中格' && this.roofStep && !await this.removeHutPlatform(bot, work)) return
+        if ((phase === '屋顶中格' || phase === '室内照明') && !bot.entity.position.floored().equals(center) &&
+            (!await work.walk(new goals.GoalBlock(center.x, center.y, center.z), 6500) || !work.ready())) return
         if (phase === '门' && !this.spawnSet && !await this.setHutSpawn(bot, work)) return
       } else if (phase === '屋顶') {
         const rim = candidates.filter(outerRoof)

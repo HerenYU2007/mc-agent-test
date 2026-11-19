@@ -42,8 +42,8 @@ function hutBlueprint(site) {
     }
   }
   // Interior lights hang on the rear wall and entrance wall.
-  add('照明', MATERIAL.light, 0, 1, -1, { faces: [front.scaled(-1)] })
-  add('照明', MATERIAL.light, -1, 1, 1, { faces: [front] })
+  add('室内照明', MATERIAL.light, 0, 1, -1, { faces: [front.scaled(-1)] })
+  add('室内照明', MATERIAL.light, -1, 1, 1, { faces: [front] })
   for (const x of [-1, 1]) add('照明', MATERIAL.light, x, 1, 3, { faces: [front.scaled(-1)] })
   add('门', MATERIAL.door, 0, 0, 2, { baseOnly: true, look: front.scaled(-1), pair: point(0, 1, 2) })
   return cells
