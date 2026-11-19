@@ -6,7 +6,7 @@ const nbt = require('prismarine-nbt')
 const FILE_LIMIT = 64 * 1024 * 1024
 const VOLUME_LIMIT = 16 * 1024 * 1024
 const AXES = ['x', 'y', 'z']
-const AIR = new Set(['air', 'cave_air', 'void_air', 'structure_void'])
+const AIR = new Set(['air', 'cave_air', 'void_air'])
 
 function vector(tag, label) {
   const coordinates = AXES.map(axis => tag?.[axis])
@@ -14,7 +14,7 @@ function vector(tag, label) {
   return coordinates
 }
 
-function readLitematic(filename) {
+function readLitematic(filename, { includeAir = false, maxVolume = VOLUME_LIMIT } = {}) {
   if (fs.statSync(filename).size > FILE_LIMIT) throw new Error('Litematic 文件超过 64 MiB')
   const input = fs.readFileSync(filename)
   const bytes = input[0] === 0x1f && input[1] === 0x8b ? gunzipSync(input, { maxOutputLength: FILE_LIMIT }) : input
@@ -34,7 +34,7 @@ function readLitematic(filename) {
     const [width, height, depth] = size
     const regionVolume = width * height * depth
     volume += regionVolume
-    if (size.some(value => value === 0) || !Number.isSafeInteger(volume) || volume > VOLUME_LIMIT) {
+    if (size.some(value => value === 0) || !Number.isSafeInteger(volume) || volume > Math.min(maxVolume, VOLUME_LIMIT)) {
       throw new Error(`蓝图尺寸无效或体积过大 ${label}`)
     }
     // Litematica coordinates are relative to the selection origin. The array starts at each region's minimum corner.
@@ -69,15 +69,16 @@ function readLitematic(filename) {
       if (shift + bits > 64) value |= words[word + 1] << BigInt(64 - shift)
       const state = palette[Number(value & mask)]
       if (!state) throw new Error(`蓝图材料索引超界 ${label}`)
-      if (AIR.has(state.block)) continue
+      if (state.block === 'structure_void' || (!includeAir && AIR.has(state.block))) continue
+      const target = AIR.has(state.block) ? { block: 'air', properties: {} } : state
       const pos = [index % width, Math.floor(index / (width * depth)), Math.floor(index / width) % depth]
         .map((coord, axis) => coord + corner[axis])
       const key = pos.join(',')
       const previous = cells.get(key)
-      if (previous && (previous.block !== state.block || JSON.stringify(previous.properties) !== JSON.stringify(state.properties))) {
+      if (previous && (previous.block !== target.block || JSON.stringify(previous.properties) !== JSON.stringify(target.properties))) {
         throw new Error(`蓝图区域在 ${key} 有不同的重叠方块`)
       }
-      if (!previous) cells.set(key, { pos, ...state })
+      if (!previous) cells.set(key, { pos, ...target })
     }
     skippedEntities += region.Entities?.length || 0
     skippedBlockEntityData += region.TileEntities?.length || 0

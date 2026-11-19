@@ -13,3 +13,7 @@ npm run agent
 ```
 
 实测时可给 Bot 圆石、已加工的木材、室内设施、火把和燃料，以及一把石镐和石锹。从库存没有沙子和玻璃开始，观察「starter hut sand selected」「starter hut sand collected」「starter hut glass collected」。用 `data get entity NMO-HutBot respawn` 核实服务器存下的重生点，确认它对应室内的床。
+
+也可以给生存施工入口传入这款小屋的 Litematic v6 蓝图。设置 `MC_BUILD_STARTER_HUT_BLUEPRINT` 为文件的绝对路径，给它使用单独的进度文件，再运行 `npm run agent`。原点设在小屋中心、门朝南。导入时核对小屋的方块坐标与门、床和下半台阶，墙板和屋顶仍可使用手头同类木料。
+
+蓝图在入口正前方用空气标记需清理的格子。Bot 进门前从上往下，用背包里的工具挖掉这些格子的障碍。其他留空的位置用 `structure_void` 表示，避免把地面和周围方块当成施工目标。测试日志中每次成功挖除都会出现 `starter hut entrance cleared`。

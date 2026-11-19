@@ -3,7 +3,8 @@ const path = require('node:path')
 const { Vec3 } = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
 const { readStructureNbt } = require('./structure-nbt')
-const { HUT_ID, HUT_SIZE, hutBlueprint, hutItem, hutBlockMatches } = require('./starter-hut')
+const { HUT_ID, HUT_SIZE, hutBlueprint, hutItem, hutBlockMatches,
+  hutEntrance, loadHutSchematic } = require('./starter-hut')
 
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const CLEARABLE = new Set(['short_grass', 'tall_grass', 'fern', 'large_fern', 'bush', 'dead_bush', 'snow'])
@@ -142,12 +143,14 @@ function vector({ x, y, z }) {
 }
 
 class SupplyStation {
-  constructor(stateFile, requested, schematicFile, hut = false) {
+  constructor(stateFile, requested, schematicFile, hut = false, hutFile) {
     this.stateFile = stateFile
+    hut ||= Boolean(hutFile)
     if (hut && schematicFile) throw new Error('生存小屋与外部 NBT 蓝图需分别启动')
     this.hut = hut
+    this.hutSchematic = hutFile ? loadHutSchematic(hutFile) : null
     this.schematic = schematicFile ? readStructureNbt(schematicFile) : null
-    this.blueprintId = hut ? HUT_ID : this.schematic?.id ?? null
+    this.blueprintId = hut ? this.hutSchematic?.id ?? HUT_ID : this.schematic?.id ?? null
     this.size = hut ? HUT_SIZE : this.schematic?.size ?? STATION_SIZE
     this.requested = requested || hut || Boolean(this.schematic)
     this.phase = '待选址'
@@ -247,6 +250,7 @@ class SupplyStation {
     if (!this.site) await this.selectSite(bot, work)
     if (!this.site || this.site.dimension !== bot.game.dimension || !work.ready()) return
     const { center, entry } = this.site
+    if (this.hut && bot.blockAt(entry) && !await this.clearHutEntrance(bot, work)) return
     if (this.hut && !this.glassPrepared) {
       const required = this.cells.filter(cell => cell.block === 'glass' && !this.cellMatches(bot, cell)).length
       if (!await work.prepareGlass(required) || !work.ready()) return
@@ -353,6 +357,25 @@ class SupplyStation {
   hutPlatform() {
     const { center, front } = this.site
     return [center.plus(front), center, center.plus(UP)]
+  }
+
+  async clearHutEntrance(bot, work) {
+    for (const position of hutEntrance(this.site, this.hutSchematic?.heights)) {
+      let block = bot.blockAt(position)
+      if (!block) return false
+      if (AIR.has(block.name)) continue
+      this.phase = '清理小屋入口'
+      if (!bot.canDigBlock(block) || !bot.canSeeBlock(block)) {
+        const goal = new goals.GoalLookAtBlock(position, bot.world, { reach: 4 })
+        if (!await work.walk(goal, 6500) || !work.ready()) return false
+        block = bot.blockAt(position)
+        if (AIR.has(block?.name)) continue
+      }
+      if (!work.ready() || !block?.diggable || !bot.canDigBlock(block) || !bot.canSeeBlock(block)) return false
+      if (!await work.dig(block, new Set([block.name])) || !AIR.has(bot.blockAt(position)?.name)) return false
+      work.log('starter hut entrance cleared', { position, block: block.name })
+    }
+    return true
   }
 
   async climbHutPlatform(bot, work) {

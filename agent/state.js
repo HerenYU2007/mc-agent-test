@@ -83,7 +83,8 @@ function createState() {
 
     // 建筑与基地
     supplyStation: new SupplyStation(process.env.MC_SUPPLY_STATION_STATE,
-      process.env.MC_BUILD_SUPPLY_STATION === '1', process.env.MC_BUILD_NBT, process.env.MC_BUILD_STARTER_HUT === '1'),
+      process.env.MC_BUILD_SUPPLY_STATION === '1', process.env.MC_BUILD_NBT, process.env.MC_BUILD_STARTER_HUT === '1',
+      process.env.MC_BUILD_STARTER_HUT_BLUEPRINT),
     supplyBase: undefined,
   }
 }

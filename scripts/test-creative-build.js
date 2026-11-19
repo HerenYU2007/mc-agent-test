@@ -11,13 +11,13 @@ const { matches, orderCells, clickPoint, encodeBlockState } = require('../agent/
 const states = [
   ['air'], ['polished_diorite'], ['spruce_log', { axis: 'y' }],
   ['smooth_quartz_stairs', { facing: 'east', half: 'top', shape: 'straight', waterlogged: 'false' }],
-  ['red_wool'], ['glass'],
+  ['red_wool'], ['glass'], ['structure_void'],
 ]
 
 function fixture() {
   const [width, height, depth] = [5, 3, 5]
   const cells = [[0, 0, 0, 1], [1, 0, 0, 1], [2, 0, 0, 1], [3, 0, 0, 4],
-    [1, 0, 4, 1], [1, 1, 0, 2], [2, 1, 0, 3], [3, 1, 0, 5], [3, 2, 0, 4]]
+    [1, 0, 4, 1], [1, 1, 0, 2], [2, 1, 0, 3], [3, 1, 0, 5], [3, 2, 0, 4], [0, 0, 4, 6]]
   const bits = 3
   const words = Array.from({ length: Math.ceil(width * height * depth * bits / 64) }, () => 0n)
   for (const [x, y, z, state] of cells) {
@@ -51,6 +51,10 @@ if (process.argv[2] === '--fixture' && process.argv[3]) {
     assert.deepEqual(plan.minimum, [0, 0, 0])
     assert.deepEqual(plan.maximum, [4, 2, 4])
     assert.equal(plan.cells.length, 9)
+    const withAir = readLitematic(target, { includeAir: true })
+    assert.equal(withAir.cells.filter(cell => cell.block === 'air').length, 65)
+    assert.ok(!withAir.cells.some(cell => cell.pos.join(',') === '0,0,4'))
+    assert.throws(() => readLitematic(target, { includeAir: true, maxVolume: 74 }), /体积过大/)
     assert.equal(plan.skippedEntities, 1)
     const stair = plan.cells.find(cell => cell.block.endsWith('stairs'))
     assert.deepEqual(stair.pos, [2, 1, 0])

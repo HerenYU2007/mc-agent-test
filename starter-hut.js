@@ -1,10 +1,17 @@
+const fs = require('node:fs')
+const { createHash } = require('node:crypto')
 const { Vec3 } = require('vec3')
+const { readLitematic } = require('./litematic')
 
 const HUT_ID = 'starter-hut-5x5-v1'
 const HUT_SIZE = [5, 4, 5]
 const WOOD = /^(?:oak|spruce|birch|jungle|acacia|dark_oak|mangrove|cherry|pale_oak|bamboo|crimson|warped)_/
 const MATERIAL = { planks: 'planks', slab: 'wooden_slab', door: 'wooden_door', bed: 'bed', light: 'wall_torch' }
 const roofRings = [2, 1, 0]
+
+function hutEntrance(site, heights = [0, 1, 2]) {
+  return heights.map(height => site.entry.offset(0, height, 0)).reverse()
+}
 
 function hutBlueprint(site) {
   const { center, front, supports } = site
@@ -73,4 +80,39 @@ function hutBlockMatches(bot, cell) {
     : properties.half === 'lower' && other.half === 'upper'
 }
 
-module.exports = { HUT_ID, HUT_SIZE, hutBlueprint, hutItem, hutBlockMatches }
+function loadHutSchematic(filename) {
+  const center = new Vec3(0, 0, 0)
+  const site = { center, front: new Vec3(0, 0, 1), entry: new Vec3(0, 0, 3), supports: [] }
+  const positions = new Map()
+  for (const cell of hutBlueprint(site)) {
+    positions.set(cell.position.toArray().join(), { ...cell, pairedHalf: false })
+    if (cell.pair) positions.set(cell.pair.toArray().join(), { ...cell, pairedHalf: true })
+  }
+  const clearance = hutEntrance(site)
+  const heights = []
+  const { cells } = readLitematic(filename, { includeAir: true, maxVolume: 5 * 4 * 6 })
+  for (const { pos, block, properties } of cells) {
+    if (block === 'air') {
+      if (!clearance.some(position => position.toArray().join() === pos.join())) {
+        throw new Error(`生存小屋蓝图的清理格超出入口范围 ${pos}`)
+      }
+      heights.push(pos[1])
+      continue
+    }
+    const cell = positions.get(pos.join())
+    const matching = cell?.block === MATERIAL.light ? block === 'wall_torch' : hutItem(block, cell?.block)
+    if (!matching || (cell.block === MATERIAL.slab && properties.type !== 'bottom') ||
+        (cell.block === MATERIAL.door && properties.half !== (cell.pairedHalf ? 'upper' : 'lower')) ||
+        (cell.block === MATERIAL.bed && properties.part !== (cell.pairedHalf ? 'head' : 'foot'))) {
+      throw new Error(`生存小屋蓝图中方块与施工模板不一致 ${pos} ${block}`)
+    }
+    positions.delete(pos.join())
+  }
+  if (positions.size || !heights.includes(0) || !heights.includes(1)) {
+    throw new Error('生存小屋蓝图缺少结构方块或两格入口净空')
+  }
+  const id = createHash('sha256').update(fs.readFileSync(filename)).digest('hex')
+  return { id, heights: heights.sort((a, b) => a - b) }
+}
+
+module.exports = { HUT_ID, HUT_SIZE, hutBlueprint, hutItem, hutBlockMatches, hutEntrance, loadHutSchematic }
