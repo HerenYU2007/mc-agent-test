@@ -159,6 +159,7 @@ class SupplyStation {
       this.completed = data.completed
       this.roofStep = Boolean(data.roofStep)
       this.spawnSet = Boolean(data.spawnSet)
+      this.glassPrepared = Boolean(data.glassPrepared)
       this.phase = this.completed ? '已建成' : '待复工'
       this.requested = true
       this.resumePending = !this.completed
@@ -199,7 +200,8 @@ class SupplyStation {
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true })
     const temp = this.stateFile + '.tmp'
     fs.writeFileSync(temp, JSON.stringify({ version: 1, site: this.site, worked: this.worked,
-      completed: this.completed, roofStep: this.roofStep, schematicId: this.blueprintId, spawnSet: this.spawnSet }) + '\n')
+      completed: this.completed, roofStep: this.roofStep, schematicId: this.blueprintId,
+      spawnSet: this.spawnSet, glassPrepared: this.glassPrepared }) + '\n')
     fs.renameSync(temp, this.stateFile)
   }
 
@@ -239,6 +241,12 @@ class SupplyStation {
     if (!this.site) await this.selectSite(bot, work)
     if (!this.site || this.site.dimension !== bot.game.dimension || !work.ready()) return
     const { center, entry } = this.site
+    if (this.hut && !this.glassPrepared) {
+      const required = this.cells.filter(cell => cell.block === 'glass' && !this.cellMatches(bot, cell)).length
+      if (!await work.prepareGlass(required) || !work.ready()) return
+      this.glassPrepared = true
+      this.save()
+    }
     if (this.resumePending || !bot.blockAt(center)) {
       this.phase = '返回工地'
       if (!await work.walk(new goals.GoalNear(entry.x, entry.y, entry.z, 1), 16000) || !work.ready()) return
@@ -355,7 +363,8 @@ class SupplyStation {
   async removeHutPlatform(bot, work) {
     const { x, y, z } = this.site.entry
     if (!await work.walk(new goals.GoalBlock(x, y, z), 6500) || !work.ready()) return false
-    for (const position of this.hutPlatform().reverse()) {
+    const [step, base, top] = this.hutPlatform()
+    for (const position of [top, step, base]) {
       const block = bot.blockAt(position)
       if (matches(block?.name, PLANK) && (!bot.canDigBlock(block) || !bot.canSeeBlock(block) || !await work.dig(block))) return false
     }

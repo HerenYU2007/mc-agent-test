@@ -7,7 +7,7 @@ const CONVERTED = { wooden_slab: '_slab', wooden_door: '_door' }
 
 async function collectSand(bot, work, features) {
   const ids = [...SAND].map(name => bot.registry.blocksByName[name]?.id).filter(Number.isInteger)
-  const positions = bot.findBlocks({ matching: ids, maxDistance: 64, count: 64 })
+  const positions = bot.findBlocks({ matching: ids, maxDistance: 64, count: 192 })
   for (const position of positions) {
     if (!work.ready()) return false
     if (work.protected(position)) continue
@@ -77,28 +77,33 @@ async function starterHutMaterials(bot, materials, work, features) {
     delete remaining[material]
   }
   delete remaining.wall_torch
-  const missingGlass = (materials.glass ?? 0) - features.inventoryItemCount('glass')
+  return await prepareHutGlass(bot, materials.glass ?? 0, work, features) ? remaining : null
+}
+
+async function prepareHutGlass(bot, count, work, features) {
+  const items = () => bot.inventory.items()
+  const missingGlass = count - features.inventoryItemCount('glass')
   if (missingGlass > 0) {
     if (features.inventoryCount(SAND) < missingGlass) {
       work.phase('找沙制玻璃')
       if (!await collectSand(bot, work, features) && work.ready()) await work.explore()
-      return null
+      return false
     }
     if (!features.hasTool('pickaxe')) {
       await features.prepareStarterGear()
-      return null
+      return false
     }
     const planksForFuel = Math.ceil(missingGlass * 10 / 15)
     if (!items().some(item => ['coal', 'charcoal'].includes(item.name)) && features.plankCount() < planksForFuel) {
       if (!await features.makePlanksFor(planksForFuel)) await features.collectWoodWithPlan()
-      return null
+      return false
     }
     work.phase('熔炉烧玻璃')
     await features.processFurnaceBatch(SAND, 'starter hut glass collected', 30000,
       item => ['coal', 'charcoal'].includes(item.name) || item.name.endsWith('_planks'), missingGlass)
-    return null
+    return features.inventoryItemCount('glass') >= count
   }
-  return remaining
+  return true
 }
 
-module.exports = { starterHutMaterials }
+module.exports = { starterHutMaterials, prepareHutGlass }

@@ -1,7 +1,7 @@
 const { Movements } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const { STONE_DROPS, LOG_NAMES, IRON_FUEL_NAMES } = require('./config')
-const { starterHutMaterials } = require('./starter-hut-materials')
+const { starterHutMaterials, prepareHutGlass } = require('./starter-hut-materials')
 
 function createConstruction(runtimeState, features) {
   const stationBlockedSteps = new Map()
@@ -146,14 +146,16 @@ function createConstruction(runtimeState, features) {
     let disconnected
     const connectionEnded = new Promise(resolve => { disconnected = resolve })
     connection.once('end', disconnected)
+    const hutWork = {
+      ready, walk, log: features.log, explore: features.exploreOneStep,
+      phase: phase => { runtimeState.supplyStation.phase = phase },
+      protected: position => runtimeState.supplyStation.protects(connection, position),
+    }
     try {
       await Promise.race([connectionEnded, runtimeState.supplyStation.step(connection, { ready, walk, log: features.log, explore: features.exploreOneStep,
+        prepareGlass: count => prepareHutGlass(connection, count, hutWork, features),
         materials: async (materials, hutSite) => {
-          const remaining = hutSite ? await starterHutMaterials(connection, materials, {
-            ready, walk, log: features.log, explore: features.exploreOneStep,
-            phase: phase => { runtimeState.supplyStation.phase = phase },
-            protected: position => runtimeState.supplyStation.protects(connection, position),
-          }, features) : materials
+          const remaining = hutSite ? await starterHutMaterials(connection, materials, hutWork, features) : materials
           return remaining ? supplyStationMaterials(connection, remaining, ready) : false
         }, dig: features.digWithExposure })])
     } catch (error) {
