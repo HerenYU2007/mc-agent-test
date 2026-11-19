@@ -371,7 +371,8 @@ function createScheduler(runtimeState, features) {
 
         if (requestedAction === 'attack') {
           const selectedDistance = selectedThreat ? selectedThreat.position.distanceTo(runtimeState.bot.entity.position) : Infinity
-          if (selectedThreat && state.night && selectedDistance > 8) {
+          const rangedOnly = state.night && selectedDistance > 8
+          if (selectedThreat && rangedOnly && !features.canUseCombatBow(runtimeState.bot, selectedThreat)) {
             // Do not chase distant mobs at night; keep building gear and fight only what closes in.
             features.log('night attack override; not chasing distant hostile', { threat: features.entityNameOf(selectedThreat), distance: Number(selectedDistance.toFixed(1)) })
             features.persistExperience({ cycle: runtimeState.cycle, action: 'attack-skip', experience: '夜间不追击8格外的敌对生物，继续补装备，等它靠近再近战' })
@@ -380,7 +381,7 @@ function createScheduler(runtimeState, features) {
             return
           }
           if (selectedThreat) {
-            await features.executeAttack(selectedThreat, modelDecision)
+            await features.executeAttack(selectedThreat, { ...modelDecision, rangedOnly })
             return
           }
           features.log('model requested attack but no live target was available')

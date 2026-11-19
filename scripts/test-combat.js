@@ -3,6 +3,7 @@ const { EventEmitter } = require('node:events')
 const { Vec3 } = require('vec3')
 const { meleeExchange, jumpAttackStep, opponentMissedSwing, hasRaisedShield } = require('../agent/combat')
 const createCombatInterruption = require('../agent/combat-interruption')
+const { bowAim, clearArrowPath } = require('../agent/combat-bow')
 
 const exchange = { shield: true, inReach: true, ready: true, guarding: 300,
   recentBlock: false, incoming: true, recover: false, defensive: false, firstStrike: true }
@@ -31,6 +32,16 @@ assert.equal(hasRaisedShield(0, [sword, shield]), false)
 assert.equal(hasRaisedShield(3, [sword, shield]), true)
 assert.equal(hasRaisedShield(1, [shield, sword]), true)
 assert.equal(hasRaisedShield(1, [sword, shield]), false)
+
+const arrowOrigin = new Vec3(0, 65.5, 0)
+const arrowTarget = new Vec3(16, 65.5, 0)
+const straight = bowAim(arrowOrigin, arrowTarget)
+const leading = bowAim(arrowOrigin, arrowTarget, new Vec3(0, 0, 0.24))
+assert.ok(straight.ticks > 5 && straight.ticks < 6)
+assert.ok(straight.velocity.y > 0)
+assert.ok(leading.velocity.z > 0.2)
+assert.equal(clearArrowPath({ raycast: () => null }, arrowOrigin, straight), true)
+assert.equal(clearArrowPath({ raycast: start => start.x > 5 ? {} : null }, arrowOrigin, straight), false)
 
 async function testInterruption() {
   const original = { isEnd: () => false }
@@ -68,5 +79,5 @@ async function testInterruption() {
   assert.equal(await actions.resumeCombatTask(), false)
 }
 
-testInterruption().then(() => console.log('通过：格挡反击与跳劈时序、原路点与采矿目标恢复、死亡清除战前任务。'))
+testInterruption().then(() => console.log('通过：格挡反击、跳劈时序、弓箭弹道、战后任务恢复与死亡清除。'))
   .catch(error => { console.error(error); process.exitCode = 1 })

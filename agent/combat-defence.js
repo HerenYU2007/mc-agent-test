@@ -184,6 +184,7 @@ function createCombatDefence(runtimeState, features) {
     const onExplosion = () => features.log('creeper explosion observed while shielding', { entityId: creeper.id })
     connection._client.once('explosion', onExplosion)
     try {
+      features.cancelCombatBow(connection, '苦力怕即将爆炸，切换格挡')
       features.stopPathfinder()
       connection.clearControlStates()
       const start = connection.entity.position.clone()
@@ -219,6 +220,7 @@ function createCombatDefence(runtimeState, features) {
     features.pauseCombatTask(connection)
     runtimeState.impactGuards.add(connection)
     try {
+      features.cancelCombatBow(connection, '检测到来箭，切换格挡')
       features.stopPathfinder()
       connection.clearControlStates()
       const eyes = connection.entity.position.offset(0, connection.entity.eyeHeight, 0)

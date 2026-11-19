@@ -132,7 +132,8 @@ function createCombat(runtimeState, features) {
     const connection = runtimeState.bot
     if (!threat || !connection?.entity || features.waterOwnsMovement() || runtimeState.isEating || runtimeState.meleeConnection) return false
     let name = hostileName(threat)
-    if (mustAvoidMelee(threat)) {
+    const defensive = modelDecision?.defensive === true
+    if (mustAvoidMelee(threat) && (defensive || !features.canUseCombatBow(connection, threat))) {
       return threat.position.distanceTo(runtimeState.bot.entity.position) <= 8 ? executeFlee(threat) : false
     }
     features.pauseCombatTask(connection)
@@ -140,7 +141,6 @@ function createCombat(runtimeState, features) {
     runtimeState.meleeConnection = connection
     runtimeState.lastDecision = 'hunt-hostile'
     features.log('combat pursuit started', { target: name, id: threat.id, reason: modelDecision?.reason || 'visible hostile' })
-    const defensive = modelDecision?.defensive === true
     const deadline = Date.now() + (defensive ? 6500 : 18000)
     let killed = false
     const onDeath = entity => {
@@ -160,6 +160,8 @@ function createCombat(runtimeState, features) {
     let weaponReadyAt = 0
     let nextShieldBreakAt = 0
     let restoreWeapon = false
+    let needsMeleeWeapon = false
+    let bowRetryAt = 0
     const activeHandIndex = connection.registry.entitiesByName.player?.metadataKeys?.indexOf('living_entity_flags')
     const clearJump = () => {
       if (!jump) return
@@ -186,12 +188,34 @@ function createCombat(runtimeState, features) {
           features.log('combat target switched', { previous, target: name, id: live.id })
         }
         if (!live || live.isValid === false) break
+        if (!defensive && danger?.action !== 'flee' && Date.now() >= bowRetryAt && features.canUseCombatBow(connection, live)) {
+          clearJump()
+          axePlan = null
+          restoreWeapon = false
+          needsMeleeWeapon = true
+          const shot = await features.shootCombatBow(connection, live)
+          if (shot) {
+            await new Promise(resolve => setTimeout(resolve, 180))
+            continue
+          }
+          bowRetryAt = Date.now() + 900
+          if (connection !== runtimeState.bot || connection.health <= 0 || runtimeState.impactGuards.has(connection)) continue
+        }
+        if (modelDecision?.rangedOnly && danger?.action !== 'flee' && connection.entity.position.distanceTo(live.position) > 8) break
         if (mustAvoidMelee(live) || danger?.action === 'flee') {
           clearJump()
           features.lowerCombatShield(connection)
           runtimeState.lastCombatDecision = { action: 'flee', reason: danger?.reason || '交战中状态下降，立即撤退' }
           await executeFlee(danger?.target || live, runtimeState.lastCombatDecision)
           break
+        }
+        if (needsMeleeWeapon) {
+          const previous = connection.heldItem?.type
+          await equipCombatItem()
+          if (connection.heldItem?.type !== previous) weaponReadyAt = Date.now() + meleeCooldown(connection.heldItem)
+          needsMeleeWeapon = false
+          runtimeState.lastDecision = 'hunt-hostile'
+          if (runtimeState.impactGuards.has(connection)) continue
         }
         const sight = hostileSight(live)
         if (sight.visible && sight.distance <= 3.8) {
@@ -333,6 +357,7 @@ function createCombat(runtimeState, features) {
       }
     } finally {
       clearJump()
+      features.cancelCombatBow(connection, '本次战斗结束')
       if (!runtimeState.fleeingActive && !runtimeState.impactGuards.has(connection)) features.lowerCombatShield(connection)
       runtimeState.meleeConnection = null
       connection.removeListener('entityDead', onDeath)
@@ -350,6 +375,7 @@ function createCombat(runtimeState, features) {
     const connection = runtimeState.bot
     if (!connection?.entity || connection.health <= 0 || features.waterOwnsMovement() ||
         runtimeState.fleeingActive || runtimeState.impactGuards.has(connection)) return false
+    features.cancelCombatBow(connection, '进入撤离')
     features.pauseCombatTask(connection)
     runtimeState.fleeingActive = true
     runtimeState.retreatUntil = Date.now() + 10000
@@ -558,12 +584,14 @@ function createCombat(runtimeState, features) {
   }
 
   async function handleScriptFallbackThreat() {
+    const connection = runtimeState.bot
     const candidates = nearbyThreatSignature().threats
-      .map(({ id }) => runtimeState.bot.entities[id])
+      .map(({ id }) => connection.entities[id])
       .filter(entity => entity && hostileSight(entity).visible)
-    const danger = candidates.find(entity => mustAvoidMelee(entity) && entity.position.distanceTo(runtimeState.bot.entity.position) < 8)
+    const danger = candidates.find(entity => mustAvoidMelee(entity) && entity.position.distanceTo(connection.entity.position) < 8 &&
+      !features.canUseCombatBow(connection, entity))
     if (danger) return executeFlee(danger)
-    const target = candidates.find(entity => !mustAvoidMelee(entity) &&
+    const target = candidates.find(entity => (!mustAvoidMelee(entity) || features.canUseCombatBow(connection, entity)) &&
       (lastUnreachedHostile?.id !== entity.id || Date.now() > lastUnreachedHostile.until))
     return target ? executeAttack(target) : false
   }
@@ -599,7 +627,7 @@ function createCombat(runtimeState, features) {
     })
     const minHealth = Math.max(6, 6 + (options.length - 1) * 3 + (ranged ? (hasShield ? 1 : 4) : 0) +
       (flanked ? 2 : 0) - (armor >= 3 ? 2 : 0) - (hasShield && !flanked ? 1 : 0))
-    if (mustAvoidMelee(target) || runtimeState.bot.health <= minHealth) {
+    if ((mustAvoidMelee(target) && !features.canUseCombatBow(runtimeState.bot, target)) || runtimeState.bot.health <= minHealth) {
       const pursuit = retreatPursuits.get(runtimeState.bot)
       if (pursuit && Date.now() - pursuit.started >= 12000 && Date.now() - pursuit.updated <= 16000 &&
           pursuit.goals >= 2 && hasShield && !ranged && !flanked && runtimeState.bot.health >= 7 && !mustAvoidMelee(target)) {
@@ -699,7 +727,7 @@ function createCombat(runtimeState, features) {
       lastThreatDispatchAt = now
       features.log('urgent threat detected', { radius: THREAT_RADIUS, threats: current.threats })
       const response = closeSignature && closeCombatPlan()
-      if (response && !features.waterOwnsMovement() && !runtimeState.emergencyRetreating && !runtimeState.fleeingActive && runtimeState.lastDecision !== 'hunt-hostile') {
+      if (response && !features.waterOwnsMovement() && !runtimeState.emergencyRetreating && !runtimeState.fleeingActive && !runtimeState.meleeConnection) {
         features.pauseCombatTask(runtimeState.bot)
         if (runtimeState.bot.pathfinder.goal) features.stopPathfinder()
         if (runtimeState.bot.targetDigBlock) runtimeState.bot.stopDigging()

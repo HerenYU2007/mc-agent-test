@@ -1,5 +1,6 @@
 const { USERNAME, THREAT_RADIUS, STONE_DROPS, LOG_NAMES, IRON_INPUT_NAMES } = require('./config')
 const { VILLAGE_ACTIONS } = require('./expedition-village')
+const BOW_ACTIONS = { 'draw-bow': '拉弓瞄准', 'shoot-bow': '放箭' }
 const { FARM_LABELS } = require('./base-farm')
 
 function createTelemetry(runtimeState, features) {
@@ -24,7 +25,8 @@ function createTelemetry(runtimeState, features) {
     const audit = runtimeState.lastMineAudit?.cycle === runtimeState.currentMineOrder?.cycle && runtimeState.lastMineAudit?.target === runtimeState.currentMineOrder?.target
       ? runtimeState.lastMineAudit : null
     return { ...status, position: connection.entity.position.floored(), health: connection.health, food: connection.food,
-      freeSlots: features.freeBackpackSlots(inventory), foodRecovery: runtimeState.recoveringFood, action: VILLAGE_ACTIONS[action] || FARM_LABELS[action] || action,
+      freeSlots: features.freeBackpackSlots(inventory), foodRecovery: runtimeState.recoveringFood,
+      action: VILLAGE_ACTIONS[action] || FARM_LABELS[action] || BOW_ACTIONS[action] || action,
       shieldRaised: runtimeState.raisedShields.has(connection), navigation: features.visibleNavigationState(), mineTarget: runtimeState.currentMineTarget,
       mineOrder: runtimeState.mineMode ? runtimeState.currentMineOrder?.target : null, committedMineTarget: runtimeState.committedMineTarget?.position,
       actual: audit?.actual, mineResult: audit?.result, combatReason: visiting && VILLAGE_ACTIONS[action] ? null : runtimeState.lastCombatDecision?.reason,
