@@ -19,3 +19,7 @@
    ```
 
 遇到会覆盖多个文件的工具，先核对写入清单。遇到锁定、联网失败或同步冲突时，保留现有修改和锁记录，向用户说明阻塞。各平台命令见 [Windows 自动同步](docs/AUTO-SYNC.md) 和 [macOS Codex 接手指南](docs/CODEX-MAC-HANDOFF.md)。
+
+## Codex 协作收件箱
+
+协作开工、遇到接口阻塞和推送交接前，用 `node scripts/codex-mail.js inbox` 查未读消息。接口变更、待测项目和交接事项用 `send` 发送，回复原消息用 `reply`。消息提供协作上下文，执行文件写入仍遵守上面的远程锁规则。只发适合公开 Issue 的内容。命令和启动方式见 [协作收件箱使用说明](docs/CODEX-MAIL.md)。
