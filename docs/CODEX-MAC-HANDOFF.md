@@ -37,17 +37,22 @@
 
 ### 1. 先同步，再抢锁
 
-读取和搜索可以直接进行。第一次写文件前，让同步器先接收远程提交，再列出本次会改动的全部路径，包括新增、删除、重命名前后和生成器会写入的跟踪文件。把示例路径换成实际路径。只有命令成功并列出每个文件“可以编辑”，才开始写文件。
+读取和搜索可以直接进行。每次写文件前，从仓库根目录运行 `status`，确认当前工作树的同步器在运行且 GitHub 上的 `collab` 可达。命令须以退出码 0 显示「同步运行正常，远程 collab 可达」。若未运行，在另一终端启动同步器后重查。接收本规则时若还在运行旧版同步器，用 `node scripts/auto-sync-macos.js restart` 更新进程，并保持启动终端开启。
+
+把下方示例路径换成全部待写入路径，包括新增、删除、重命名前后和生成器会写入的共享文件。查锁后对空闲路径申请锁，逐个确认显示「当前工作树持有」再编辑。若同步或查锁失败，先恢复并复查。
 
 ```sh
+node scripts/auto-sync-macos.js status
+node scripts/file-lock.js status -- agent/combat.js agent/combat-defence.js
 node scripts/file-lock.js acquire -- agent/combat.js agent/combat-defence.js
+node scripts/file-lock.js status -- agent/combat.js agent/combat-defence.js
 ```
 
 如果正在继续一项持锁任务且已有改动，先用 `git status` 和 `node scripts/file-lock.js status` 确认它们归属原任务，保留现有改动与锁。若有路径被另一台电脑持锁，等待或改做其他文件。若脚本提示“已持锁，但远程 collab 在抢锁时更新”，等工作树同步后重复申请，见到“可以编辑”再动手。
 
 ### 2. 编辑、检查，等待自动推送
 
-新增修改范围前先申请相应文件的锁。涉及 Agent 代码时运行 `npm run test:syntax`，其他改动按任务跑相关测试。`.env`、密钥、日志、缓存、编译产物和 Finder 生成的文件留在本地。需要先做成套修改或通过测试再发布时，用 `stop` 暂停同步，完成后再用 `start` 恢复。
+续写或新增修改范围前，重查同步状态和目标锁，先锁定新增路径。涉及 Agent 代码时运行 `npm run test:syntax`，其他改动按任务跑相关测试。`.env`、密钥、日志、缓存、编译产物和 Finder 生成的文件留在本地。编辑期间保持同步器开启。
 
 同步器会等待文件内容和暂存状态至少稳定 30 秒，核对文件锁，再提交并推送。碰到对方先推送时，同步器保留本地提交，下一轮取回更新和合并。发现未持锁修改时，同步器会报告路径并等待。遇到合并冲突时，先用 `git status` 定位，保留双方内容和现有锁。协调解决并提交后，同步器会继续运行。禁止强推、硬重置、递归清理工作树或直接修改锁分支。 [Git 合并与冲突处理](https://git-scm.com/docs/git-merge#_pre_merge_checks)
 
@@ -67,6 +72,7 @@ node scripts/file-lock.js status
 在启动终端按 `Ctrl+C`，或在同一仓库的另一个终端运行 `stop`。需要重启时运行 `restart`，并保持新终端开启。异常关闭后可以从原工作树重新运行 `start`，Git 中已有的提交和文件锁会继续使用。
 
 ```sh
+node scripts/auto-sync-macos.js status
 node scripts/auto-sync-macos.js stop
 node scripts/auto-sync-macos.js restart
 ```

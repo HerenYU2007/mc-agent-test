@@ -2,12 +2,15 @@
 
 Windows 和 macOS 分别在自己的 `collab` 工作树使用 Node.js 和现有 Git 凭据。远程 `collab` 已发布后才可申请锁。两台电脑拿到同版脚本和 `AGENTS.md` 后，把项目根目录作为 Codex 工作目录。每个工作树同时安排一个编辑任务。
 
+每次写入前先运行本机的同步状态检查，Windows 用 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\auto-sync.ps1 -Action Status`，macOS 用 `node scripts/auto-sync-macos.js status`。同步状态正常后再查锁和抢锁，逐个确认「当前工作树持有」才开始写入。
+
 ```powershell
 # 查看所有锁，也可以在 status 后列出要查询的路径
 node scripts/file-lock.js status
 
-# 一次申请多个文件。退出码为 0 后再写文件
+# 一次申请多个文件，再核对当前工作树持锁
 node scripts/file-lock.js acquire -- agent/combat.js "agent/带空格的文件.js"
+node scripts/file-lock.js status -- agent/combat.js "agent/带空格的文件.js"
 
 # 完成修改后等待原有同步器提交和推送，再释放
 node scripts/file-lock.js release -- agent/combat.js "agent/带空格的文件.js"

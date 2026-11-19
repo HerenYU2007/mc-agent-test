@@ -4,7 +4,7 @@
 
 使用 macOS 的协作者请按 [macOS Codex 接手指南](CODEX-MAC-HANDOFF.md) 启动 Node.js 同步器。两种同步器共用 `collab` 分支和文件锁。
 
-修改共享文件前按 [跨电脑文件锁](FILE-LOCKS.md) 申请锁。等此同步器发布提交后，用文件锁脚本确认远程已包含修改，再释放。
+每次写入共享文件前，先在当前工作树运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\auto-sync.ps1 -Action Status`。看到「同步运行正常，远程 collab 可达」后，再查询和申请目标锁。逐个确认持锁后才编辑。等同步器发布提交后，用文件锁脚本确认远程已包含修改，再释放。 [跨电脑文件锁](FILE-LOCKS.md)
 
 ## 第一台电脑
 
@@ -44,6 +44,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\auto-sync.ps1 -Action 
 | 停止 | 双击 `stop-sync.bat`，等待启动窗口报告停止 |
 | 重启 | 在仓库根目录运行下面的 `-Action Restart` 命令，保持新窗口打开 |
 | 只检查本地配置 | 运行 `-Action Check` |
+| 编辑前确认同步运行 | 运行 `-Action Status`，确认当前工作树的进程和远程 `collab` 状态 |
 | 查看日志 | 用下面的命令定位当前工作树的 `sync.log` |
 
 ```powershell
@@ -57,7 +58,7 @@ Get-Content -LiteralPath (Join-Path $gitDir 'codex-auto-sync\sync.log') -Encodin
 ## 文件稳定与同步顺序
 
 - 每轮先查询 GitHub 上的 `collab`。本地有变化时，至少间隔 30 秒取得相同的内容哈希、文件时间戳和暂存状态后才会提交。文件继续写入时会重新计时。Codex 未保存的编辑缓冲区无法通过 Git 同步。
-- 如果手动暂存了部分修改，同步器会先提交已经稳定的暂存内容，其余内容等下一次稳定检查。较大的修改可用 `stop-sync.bat` 暂停，等相关文件一起保存后再恢复。
+- 如果手动暂存了部分修改，同步器会先提交已经稳定的暂存内容，其余内容等下一次稳定检查。写入共享文件时保持同步器开启。若同步被停止，先恢复并复查进程和文件锁，再续写。
 - 只有工作树干净时才合并远程分支。远程领先时快进，本地和远程各有提交时尝试普通合并。如果远程新跟踪的路径与本地已忽略文件重合，Git 会暂停合并并保留本地文件。先把本地文件移到另一个目录，再等待重试。推送使用普通 Git 推送，如果另一台电脑刚先推了一步，本地提交会保留到下轮再同步。
 
 ## 合并冲突

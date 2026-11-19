@@ -26,7 +26,7 @@
 
 ## 并行编辑
 
-两台 Windows 电脑使用 `collab` 自动同步时，各自在其检出的仓库根目录启动同步器，具体操作见 [PowerShell 自动同步说明](AUTO-SYNC.md)。按 `AGENTS.md` 在修改前申请 [跨电脑文件锁](FILE-LOCKS.md)，确认推送后再释放。先按功能文件分工，跨模块的大改动可以暂停同步，完成后再一起保存和检查。
+Windows 和 macOS 各自在检出的 `collab` 仓库根目录启动本机同步器。按 `AGENTS.md` 先确认同步正常，再逐个检查并申请目标文件锁，确认持锁后才写入。编辑期间保持同步器开启，远程确认收到提交后释放。先按功能文件分工。 [Windows 自动同步](AUTO-SYNC.md) · [Mac 接手指南](CODEX-MAC-HANDOFF.md) · [跨电脑文件锁](FILE-LOCKS.md)
 
 改战斗时从 `combat.js` 或 `combat-defence.js` 开始，改基地和自动熔炉时从 `supply-base.js` 开始。功能内部的小函数和临时状态放回该模块。模块通过 `features` 调用其他模块公开的动作，跨功能共享的数据在 `agent/state.js`，共享常量和连接参数在 `agent/config.js`。增加模块才需在 `runtime.js` 装配同名工厂。涉及优先级或共享状态的改动在合并时一起核对。用 `npm run test:syntax` 检查入口及每个功能模块。
 

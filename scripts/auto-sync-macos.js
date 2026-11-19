@@ -100,9 +100,16 @@ function createAudit() {
   return { assertTree, history }
 }
 
-function startMutex(gitDir) {
-  const port = 20000 + createHash('sha256').update(gitDir).digest().readUInt16BE(0) % 28000
-  const server = net.createServer(socket => socket.destroy())
+function mutexPort(gitDir) {
+  return 20000 + createHash('sha256').update(gitDir).digest().readUInt16BE(0) % 28000
+}
+
+function startMutex(gitDir, id) {
+  const port = mutexPort(gitDir)
+  const server = net.createServer(socket => {
+    socket.on('error', () => socket.destroy())
+    socket.end(id)
+  })
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen({ host: '127.0.0.1', port, exclusive: true }, () => {
@@ -110,6 +117,36 @@ function startMutex(gitDir) {
       resolve(server)
     })
   })
+}
+
+async function assertWorkerRunning(gitDir, stateDir) {
+  const runtime = path.join(stateDir, 'run.json')
+  if (!fs.existsSync(runtime)) throw new Error('此工作树未启动同步。请先运行 node scripts/auto-sync-macos.js start。')
+  const { id } = JSON.parse(fs.readFileSync(runtime, 'utf8'))
+  if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw new Error('无法确认同步进程标识。')
+  const stopFile = path.join(stateDir, id + '.stop')
+  if (fs.existsSync(stopFile)) throw new Error('同步进程正在停止。请等停止后重新启动。')
+  const running = await new Promise(resolve => {
+    const socket = net.createConnection({ host: '127.0.0.1', port: mutexPort(gitDir) })
+    let reply = ''
+    socket.setEncoding('utf8')
+    socket.setTimeout(3000, () => socket.destroy())
+    socket.on('data', chunk => {
+      reply += chunk
+      if (reply.length > id.length) socket.destroy()
+    })
+    socket.once('end', () => resolve(reply === id))
+    socket.once('error', () => resolve(false))
+    socket.once('close', () => resolve(false))
+  })
+  if (!running || fs.existsSync(stopFile)) {
+    throw new Error('无法验证此工作树的同步进程。若刚更新同步脚本，请运行 restart；否则检查日志后重试。')
+  }
+}
+
+function gitOperation(gitDir) {
+  return operationMarkers.find(name => fs.existsSync(path.join(gitDir, name))) ||
+    (git(['ls-files', '--unmerged', '-z']).text.length ? '未解决的冲突' : '')
 }
 
 function stopRequest(stateDir) {
@@ -124,8 +161,7 @@ function stopRequest(stateDir) {
 function createSync(gitDir, allowLocal, stable, stopped, log) {
   const origin = clean(['remote', 'get-url', 'origin'])
   const audit = createAudit()
-  const operation = () => operationMarkers.find(name => fs.existsSync(path.join(gitDir, name))) ||
-    (git(['ls-files', '--unmerged', '-z']).text.length ? '未解决的冲突' : '')
+  const operation = () => gitOperation(gitDir)
   let previous
   let ownedStage
 
@@ -247,9 +283,9 @@ function parseArgs() {
   if (allowLocal) args.shift()
   const interval = args.length ? Number(args[0]) : 30
   const stable = args.length > 1 ? Number(args[1]) : 30
-  if (!['check', 'start', 'stop', 'restart'].includes(action) || args.length > 2 || (!allowLocal && args.length) ||
+  if (!['check', 'status', 'start', 'stop', 'restart'].includes(action) || args.length > 2 || (!allowLocal && args.length) ||
       ![interval, stable].every(seconds => Number.isInteger(seconds) && seconds > 0 && seconds <= 3600)) {
-    throw new Error('用法：node scripts/auto-sync-macos.js <check|start|stop|restart>')
+    throw new Error('用法：node scripts/auto-sync-macos.js <check|status|start|stop|restart>')
   }
   return { action, allowLocal, interval: interval * 1000, stable: stable * 1000 }
 }
@@ -269,13 +305,23 @@ async function main() {
     console.log(`工作树 ${root}\n分支 collab，远程配置和忽略规则通过。\n日志 ${logfile}`)
     return
   }
+  if (action === 'status') {
+    const operation = gitOperation(gitDir)
+    if (operation) throw new Error(`现有 Git 操作阻塞同步 ${operation}，请处理后重查。`)
+    await assertWorkerRunning(gitDir, stateDir)
+    git(['ls-remote', '--exit-code', '--refs', 'origin', ref], { network: true })
+    await assertWorkerRunning(gitDir, stateDir)
+    console.log(`同步运行正常，远程 collab 可达。工作树 ${root}`)
+    return
+  }
 
   let server
+  const id = randomUUID()
   const deadline = Date.now() + 120000
   const restarting = action === 'restart' && stopRequest(stateDir)
   while (!server) {
     try {
-      server = await startMutex(gitDir)
+      server = await startMutex(gitDir, id)
     } catch (error) {
       if (error.code !== 'EADDRINUSE') throw error
       if (!restarting || Date.now() >= deadline) {
@@ -285,7 +331,6 @@ async function main() {
     }
   }
 
-  const id = randomUUID()
   const runtime = path.join(stateDir, 'run.json')
   const signalFile = path.join(stateDir, id + '.stop')
   let interrupted = false

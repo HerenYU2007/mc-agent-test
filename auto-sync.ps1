@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Stop', 'Restart', 'Check')]
+    [ValidateSet('Start', 'Stop', 'Restart', 'Check', 'Status')]
     [string]$Action = 'Start',
     [ValidateRange(1, 3600)][int]$IntervalSeconds = 30,
     [ValidateRange(1, 3600)][int]$StableSeconds = 30,
@@ -256,6 +256,26 @@ function Read-WorkerId {
     }
 }
 
+function Assert-WorkerRunning {
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw '此工作树未启动同步。请先运行 start-sync.bat。'
+    }
+    $probe = $null
+    try { $probe = [IO.File]::Open($lockPath, 'Open', 'ReadWrite', 'Read') }
+    catch [IO.IOException] {
+        if (($_.Exception.HResult -band 65535) -ne 32) { throw }
+    }
+    if ($probe) {
+        $probe.Dispose()
+        throw '此工作树未启动同步。请先运行 start-sync.bat。'
+    }
+    $workerId = Read-WorkerId
+    if ($workerId -notmatch '^[0-9a-f]{32}$') { throw '同步进程还在启动，请稍后重查。' }
+    if ((Test-Path -LiteralPath $stopPath) -and [IO.File]::ReadAllText($stopPath, $utf8).Trim() -ceq $workerId) {
+        throw '同步进程正在停止。请等停止后重新启动。'
+    }
+}
+
 function Request-WorkerStop {
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         $probe = Open-WorkerLock
@@ -411,6 +431,15 @@ try {
     Assert-IgnoreCoverage
     $null = Invoke-Git @('var', 'GIT_AUTHOR_IDENT')
     $null = Invoke-Git @('var', 'GIT_COMMITTER_IDENT')
+    if ($Action -eq 'Status') {
+        $operation = Get-GitOperation
+        if ($operation) { throw "现有 Git 操作阻塞同步 $operation，请处理后重查。" }
+        Assert-WorkerRunning
+        $null = Invoke-Git @('ls-remote', '--exit-code', '--refs', 'origin', $remoteRef) -Network
+        Assert-WorkerRunning
+        Write-Host "同步运行正常，远程 collab 可达。工作树 $root"
+        return
+    }
     if ($Action -eq 'Check') {
         $snapshot = Get-Snapshot
         Write-Host "工作树 $root"
