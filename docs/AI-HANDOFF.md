@@ -23,7 +23,9 @@
 
 ## 并行编辑
 
-同一分支基础上各开一个功能分支。改战斗时从 `combat.js` 或 `combat-defence.js` 开始，改基地和自动熔炉时从 `supply-base.js` 开始。功能内部的小函数和临时状态放回该模块。模块通过 `features` 调用其他模块公开的动作，跨功能共享的数据在 `agent/state.js`，共享常量和连接参数在 `agent/config.js`。增加模块才需在 `runtime.js` 装配同名工厂。涉及优先级或共享状态的改动在合并时一起核对。提交前运行 `npm run test:syntax`，它会检查入口及每个功能模块。
+两台 Windows 电脑使用 `collab` 自动同步时，各自在其检出的仓库根目录启动同步器，具体操作见 [PowerShell 自动同步说明](AUTO-SYNC.md)。先按功能文件分工，跨模块的大改动可以暂停同步，完成后再一起保存和检查。
+
+改战斗时从 `combat.js` 或 `combat-defence.js` 开始，改基地和自动熔炉时从 `supply-base.js` 开始。功能内部的小函数和临时状态放回该模块。模块通过 `features` 调用其他模块公开的动作，跨功能共享的数据在 `agent/state.js`，共享常量和连接参数在 `agent/config.js`。增加模块才需在 `runtime.js` 装配同名工厂。涉及优先级或共享状态的改动在合并时一起核对。用 `npm run test:syntax` 检查入口及每个功能模块。
 
 ## 运行环境
 
