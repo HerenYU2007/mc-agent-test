@@ -10,6 +10,7 @@ const createCanopy = require('./canopy')
 const createModel = require('./model')
 const createCombat = require('./combat')
 const createCombatDefence = require('./combat-defence')
+const createCombatInterruption = require('./combat-interruption')
 const createInventory = require('./inventory')
 const createCrafting = require('./crafting')
 const createSmelting = require('./smelting')
@@ -41,6 +42,7 @@ function startAgent() {
     createModel,
     createCombat,
     createCombatDefence,
+    createCombatInterruption,
     createInventory,
     createCrafting,
     createSmelting,

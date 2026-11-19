@@ -3,6 +3,8 @@ const { EMPTY_BLOCK } = require('./config')
 
 function createCombatDefence(runtimeState, features) {
   const shieldSteps = new WeakSet()
+  const shieldBlocks = new WeakMap()
+  const hostileSwings = new WeakMap()
 
   function damageInterruptActive(connection) {
     return runtimeState.impactGuards.has(connection) || runtimeState.meleeConnection === connection
@@ -75,6 +77,32 @@ function createCombatDefence(runtimeState, features) {
     const creeperKeys = connection.registry.entitiesByName.creeper?.metadataKeys || []
     const swell = creeperKeys.indexOf('swell_dir')
     const ignited = creeperKeys.indexOf('is_ignited')
+    const confirmShieldBlock = signal => {
+      if (connection !== runtimeState.bot || !runtimeState.raisedShields.has(connection)) return
+      const at = Date.now()
+      if (at - (shieldBlocks.get(connection) ?? 0) < 100) return
+      shieldBlocks.set(connection, at)
+      features.log('shield impact confirmed', { at, signal })
+    }
+    connection._client.on('entity_status', packet => {
+      if (packet.entityId === connection.entity?.id && packet.entityStatus === 29) confirmShieldBlock('entity-status')
+    })
+    connection.inventory.on(`updateSlot:${connection.getEquipmentDestSlot('off-hand')}`, (oldItem, item) => {
+      if (oldItem?.name === 'shield' && item?.name === 'shield' && item.durabilityUsed > oldItem.durabilityUsed) {
+        confirmShieldBlock('shield-durability')
+      }
+    })
+    connection.on('soundEffectHeard', (sound, position) => {
+      if (!/^(minecraft:)?item[._]shield[._]block$/.test(sound) || !connection.entity?.position) return
+      const ownDistance = connection.entity.position.distanceTo(position)
+      if (ownDistance <= 0.5 && !Object.values(connection.entities).some(entity =>
+        entity !== connection.entity && entity.type === 'player' && entity.position?.distanceTo(position) <= ownDistance)) {
+        confirmShieldBlock('shield-sound')
+      }
+    })
+    connection.on('entitySwingArm', entity => {
+      if (features.isHostileEntity(entity)) hostileSwings.set(entity, Date.now())
+    })
     connection.on('entityUpdate', entity => {
       if (features.entityNameOf(entity) !== 'creeper') return
       if (entity.metadata?.[swell] > 0 || entity.metadata?.[ignited] === true) litCreepers.add(entity)
@@ -151,6 +179,7 @@ function createCombatDefence(runtimeState, features) {
   }
 
   async function guardAgainstCreeper(connection, creeper, litCreepers) {
+    features.pauseCombatTask(connection)
     runtimeState.impactGuards.add(connection)
     const onExplosion = () => features.log('creeper explosion observed while shielding', { entityId: creeper.id })
     connection._client.once('explosion', onExplosion)
@@ -187,6 +216,7 @@ function createCombatDefence(runtimeState, features) {
     const retreating = runtimeState.fleeingActive
     const target = waypoint || (pursuing ? features.closeCombatPlan()?.target?.position : null) ||
       (retreating ? start.offset(velocity.x * 5, 0, velocity.z * 5) : null)
+    features.pauseCombatTask(connection)
     runtimeState.impactGuards.add(connection)
     try {
       features.stopPathfinder()
@@ -217,6 +247,8 @@ function createCombatDefence(runtimeState, features) {
     stopShieldSteps,
     stepWhileShielding,
     trackCombatImpacts,
+    latestShieldBlock: connection => shieldBlocks.get(connection) ?? 0,
+    latestHostileSwing: entity => hostileSwings.get(entity) ?? 0,
   }
 }
 

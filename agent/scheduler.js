@@ -2,6 +2,18 @@ const { goals } = require('mineflayer-pathfinder')
 const { THREAT_RADIUS, STONE_DROPS, LOG_NAMES, WOOD_TARGET } = require('./config')
 
 function createScheduler(runtimeState, features) {
+  async function actOnEncounter(encounter, model = null) {
+    const { action, target, reason, defensive } = encounter
+    features.pauseCombatTask(runtimeState.bot)
+    runtimeState.activeGoal = null
+    runtimeState.mineMode = false
+    runtimeState.lastCombatDecision = { action, reason, defensive: Boolean(defensive),
+      target: features.hostileName(target), modelAction: model?.action ?? null }
+    features.log('combat policy decision', runtimeState.lastCombatDecision)
+    if (action === 'attack') await features.executeAttack(target, runtimeState.lastCombatDecision)
+    else await features.executeFlee(target, { ...model, reason })
+  }
+
   async function decideAndAct(trigger = 'scheduled') {
     if (!runtimeState.botEnabled || !runtimeState.bot?.entity || runtimeState.bot.health <= 0 || features.waterOwnsMovement()) return
     if (runtimeState.bot && runtimeState.impactGuards.has(runtimeState.bot)) return
@@ -10,11 +22,13 @@ function createScheduler(runtimeState, features) {
       return
     }
     const immediate = !runtimeState.emergencyShelteredUntil && !runtimeState.shelteredUntilDawn ? features.closeCombatPlan() : null
-    if (immediate) runtimeState.supplyStation.interrupt(features.log, 'combat')
+    if (immediate) {
+      features.pauseCombatTask(runtimeState.bot)
+      runtimeState.supplyStation.interrupt(features.log, 'combat')
+    }
     else if (features.foodRecoveryNeeded()) runtimeState.supplyStation.interrupt(features.log, 'food')
     if (immediate?.action === 'flee' && !runtimeState.busy && !runtimeState.mineBusy && !runtimeState.isEating && !runtimeState.isSmelting && !runtimeState.isDiggingBlock) {
-      runtimeState.lastCombatDecision = { action: 'flee', reason: immediate.reason, target: features.hostileName(immediate.target) }
-      await features.executeFlee(immediate.target, runtimeState.lastCombatDecision)
+      await actOnEncounter(immediate)
       return
     }
     if (immediate) {
@@ -81,6 +95,9 @@ function createScheduler(runtimeState, features) {
       features.log('decision deferred; bot is actively eating food', { trigger })
       return
     }
+    if (!immediate && !runtimeState.busy && !runtimeState.mineBusy && !runtimeState.isEating && !runtimeState.isSmelting &&
+        !runtimeState.isDiggingBlock && !runtimeState.emergencyShelteredUntil && !runtimeState.shelteredUntilDawn &&
+        !features.deathRecoveryDue() && await features.resumeCombatTask()) return
 
     // Defer non-urgent decisions if in active mineMode with working tools
     if (runtimeState.mineMode && !runtimeState.busy && !runtimeState.mineBusy) features.finishMineObjective()
@@ -181,6 +198,10 @@ function createScheduler(runtimeState, features) {
     runtimeState.busy = true
     runtimeState.cycle += 1
     try {
+      if (immediate) {
+        await actOnEncounter(immediate)
+        return
+      }
       if (!immediate && !runtimeState.emergencyShelteredUntil && !runtimeState.shelteredUntilDawn && await features.leaveSpawnCanopy()) return
       await features.eatFoodIfNeeded()
       if (runtimeState.emergencyShelteredUntil) {
@@ -294,13 +315,7 @@ function createScheduler(runtimeState, features) {
           runtimeState.impactGuards.has(runtimeState.bot) || runtimeState.bot.health <= 0) return
       const encounter = features.closeCombatPlan()
       if (encounter) {
-        runtimeState.activeGoal = null
-        runtimeState.mineMode = false
-        const { action, target, reason, defensive } = encounter
-        runtimeState.lastCombatDecision = { action, reason, defensive: Boolean(defensive), target: features.hostileName(target), modelAction: modelDecision?.action ?? null }
-        features.log('combat policy decision', runtimeState.lastCombatDecision)
-        if (action === 'attack') await features.executeAttack(target, runtimeState.lastCombatDecision)
-        else await features.executeFlee(target, { ...modelDecision, reason })
+        await actOnEncounter(encounter, modelDecision)
         return
       }
       if (Date.now() < runtimeState.retreatUntil) return
@@ -372,7 +387,6 @@ function createScheduler(runtimeState, features) {
         } else if (requestedAction === 'flee') {
           if (nearestThreat && threatDistance <= features.threatRange(threatName) && features.mustAvoidMelee(nearestThreat) &&
               features.hostileSight(nearestThreat).visible) {
-            runtimeState.activeGoal = null
             await features.executeFlee(nearestThreat, modelDecision)
             return
           }

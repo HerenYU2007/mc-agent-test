@@ -18,7 +18,8 @@ function createTelemetry(runtimeState, features) {
     const lastCall = runtimeState.modelCalls.findLast(call => call.status === 'ok')
     const model = runtimeState.lastModelDecision
     const waiting = runtimeState.modelCalls.at(-1)?.status === 'pending' ? '已启用，正在决策' : '已启用，等待决策'
-    const action = runtimeState.lastDecision
+    const action = runtimeState.fleeingActive && runtimeState.isEating ? '撤离中进食' :
+      runtimeState.lastDecision === 'combat-resume' ? '脱战恢复原任务' : runtimeState.lastDecision
     const visiting = runtimeState.supplyBase.status().expedition?.phase === 'visiting'
     const audit = runtimeState.lastMineAudit?.cycle === runtimeState.currentMineOrder?.cycle && runtimeState.lastMineAudit?.target === runtimeState.currentMineOrder?.target
       ? runtimeState.lastMineAudit : null

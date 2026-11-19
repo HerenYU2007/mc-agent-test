@@ -2,7 +2,7 @@ const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const { THREAT_RADIUS, EMPTY_BLOCK, RANGED_HOSTILES } = require('./config')
 
-const SHIELD_READY_MS = 350
+const COUNTER_WINDOW_MS = 600
 const HOSTILE_NAMES = new Set([
   'blaze', 'cave_spider', 'drowned', 'enderman', 'ender_mite', 'evoker',
   'husk', 'magma_cube', 'pillager', 'piglin', 'piglin_brute', 'ravager',
@@ -12,7 +12,15 @@ const HOSTILE_NAMES = new Set([
 ])
 const VERY_DANGEROUS_HOSTILES = new Set(['warden', 'ravager', 'wither', 'ender_dragon'])
 
+function meleeExchange({ shield, inReach, ready, guarding, recentBlock, incoming, recover, defensive, firstStrike }) {
+  if (inReach && ready && (!shield || recentBlock || (!incoming && guarding >= (firstStrike ? 600 : 340)))) return 'strike'
+  if (shield && (incoming || defensive || !inReach || !recover || guarding > 0)) return 'guard'
+  return 'wait'
+}
+
 function createCombat(runtimeState, features) {
+  const duelOpponent = process.env.MC_DUEL_OPPONENT || ''
+  const defeated = new WeakSet()
   let lastThreatSignature = ''
 
   let lastThreatDispatchAt = 0
@@ -28,7 +36,8 @@ function createCombat(runtimeState, features) {
   let lastUnreachedHostile = null
 
   function isHostileEntity(entity) {
-    if (!entity || entity === runtimeState.bot?.entity) return false
+    if (!entity || entity === runtimeState.bot?.entity || defeated.has(entity)) return false
+    if (entity.type === 'player') return Boolean(duelOpponent && entity.username === duelOpponent)
     const name = features.entityNameOf(entity)
     if (!HOSTILE_NAMES.has(name)) return false
 
@@ -96,6 +105,7 @@ function createCombat(runtimeState, features) {
     if (mustAvoidMelee(threat)) {
       return threat.position.distanceTo(runtimeState.bot.entity.position) <= 8 ? executeFlee(threat) : false
     }
+    features.pauseCombatTask(connection)
     runtimeState.mineMode = false
     runtimeState.meleeConnection = connection
     runtimeState.lastDecision = 'hunt-hostile'
@@ -103,9 +113,14 @@ function createCombat(runtimeState, features) {
     const defensive = modelDecision?.defensive === true
     const deadline = Date.now() + (defensive ? 6500 : 18000)
     let killed = false
-    const onDeath = entity => { if (entity.id === threat.id) killed = true }
+    const onDeath = entity => {
+      defeated.add(entity)
+      if (entity.id === threat.id) killed = true
+    }
     connection.on('entityDead', onDeath)
     let attempts = 0
+    let lastCounterBlock = 0
+    let guardSince = Date.now()
     try {
       await equipCombatItem()
       while (connection === runtimeState.bot && Date.now() < deadline && runtimeState.bot.health > 0 && !features.waterOwnsMovement() && !runtimeState.emergencyRetreating && !killed) {
@@ -120,6 +135,7 @@ function createCombat(runtimeState, features) {
           threat = live = danger.target
           name = hostileName(live)
           attempts = 0
+          guardSince = Date.now()
           features.log('combat target switched', { previous, target: name, id: live.id })
         }
         if (!live || live.isValid === false) break
@@ -133,21 +149,35 @@ function createCombat(runtimeState, features) {
         if (sight.visible && sight.distance <= 3.8) {
           await runtimeState.bot.lookAt(sight.center, true)
           if (runtimeState.impactGuards.has(connection)) continue
-          const guarding = features.raiseCombatShield(connection, live)
-          if (guarding && !defensive && sight.distance > 2.7) features.stepWhileShielding(connection, sight.center, live.position)
-          else features.stopShieldSteps(connection)
+          const now = Date.now()
+          const blockAt = features.latestShieldBlock(connection)
+          const recentBlock = blockAt >= guardSince && blockAt > lastCounterBlock && now - blockAt <= COUNTER_WINDOW_MS
+          const raisedAt = runtimeState.raisedShields.get(connection)
+          const shield = connection.inventory.slots[connection.getEquipmentDestSlot('off-hand')]?.name === 'shield'
+          const inReach = sight.distance <= 3 && connection.entityAtCursor(3)?.id === live.id
+          const incoming = now - features.latestHostileSwing(live) <= 450
           const cooldown = meleeCooldown(runtimeState.bot.heldItem)
-          const shieldReady = !guarding || Date.now() - runtimeState.raisedShields.get(connection) >= SHIELD_READY_MS
-          if (sight.distance <= 3 && shieldReady && Date.now() - lastManualAttackAt >= cooldown &&
-              runtimeState.bot.entityAtCursor(3)?.id === threat.id) {
+          const action = meleeExchange({ shield, inReach, ready: now - lastManualAttackAt >= cooldown,
+            guarding: raisedAt ? now - raisedAt : 0, recentBlock, incoming,
+            recover: now - lastManualAttackAt <= 245, defensive, firstStrike: lastManualAttackAt < guardSince })
+          if (action === 'strike') {
             features.lowerCombatShield(connection)
-            runtimeState.bot.attack(live, true)
-            lastManualAttackAt = Date.now()
+            connection.attack(live, true)
+            lastManualAttackAt = now
+            if (recentBlock) {
+              lastCounterBlock = blockAt
+              runtimeState.lastCombatDecision = { action: 'attack', target: name, defensive, reason: '盾牌已挡下攻击，武器冷却结束后反击' }
+              features.log('combat shield counter', { target: name, id: live.id, delayMs: now - blockAt })
+            }
             attempts = 0
             features.log('combat swing', { target: name, id: live.id })
+          } else if (action === 'guard') {
+            const guarding = features.raiseCombatShield(connection, live)
+            if (guarding && !defensive && !inReach) features.stepWhileShielding(connection, sight.center, live.position)
+            else features.stopShieldSteps(connection)
           }
-          if (sight.distance <= 3 || (guarding && Date.now() - runtimeState.raisedShields.get(connection) < SHIELD_READY_MS + 250)) {
-            await new Promise(resolve => setTimeout(resolve, 110))
+          if (inReach || action === 'strike' || (action === 'guard' && (defensive || incoming || !raisedAt || now - raisedAt < 800))) {
+            await new Promise(resolve => setTimeout(resolve, 55))
             continue
           }
         }
@@ -183,12 +213,24 @@ function createCombat(runtimeState, features) {
     const connection = runtimeState.bot
     if (!connection?.entity || connection.health <= 0 || features.waterOwnsMovement() ||
         runtimeState.fleeingActive || runtimeState.impactGuards.has(connection)) return false
+    features.pauseCombatTask(connection)
     runtimeState.fleeingActive = true
     runtimeState.retreatUntil = Date.now() + 10000
     runtimeState.activeGoal = null
     runtimeState.mineMode = false
     runtimeState.lastDecision = 'flee'
-    const recoveringFromLowHealth = connection.health <= 8
+    const recoveringFromLowHealth = connection.health <= 10
+    let meal = null
+    let nextMealAt = 0
+    const eatOnTheMove = () => {
+      if ((!recoveringFromLowHealth && connection.health > 10) || meal || Date.now() < nextMealAt ||
+          !features.safeToEatOnRetreat(connection)) return
+      nextMealAt = Date.now() + 2600
+      features.lowerCombatShield(connection)
+      meal = features.eatFoodIfNeeded({ retreat: true, moving: true })
+        .then(ate => !ate && guardInterruptedMeal(connection))
+        .finally(() => { meal = null })
+    }
     try {
       features.lowerCombatShield(connection)
       features.stopPathfinder()
@@ -216,29 +258,57 @@ function createCombat(runtimeState, features) {
       if (connection !== runtimeState.bot || connection.health <= 0 || features.waterOwnsMovement()) return false
       let advanced = false
       for (let leg = 0; leg < 5 && connection === runtimeState.bot && connection.health > 0 && !features.waterOwnsMovement(); leg += 1) {
-        if (recoveringFromLowHealth && features.safeToEatOnRetreat(connection)) await features.restAfterRetreat(connection)
         if (connection !== runtimeState.bot || connection.health <= 0 || features.waterOwnsMovement()) return false
-        if (await features.tryEmergencyPit(connection)) return true
+        if (!meal && await features.tryEmergencyPit(connection)) return true
         const plan = closeCombatPlan()
         if (leg > 0 && plan?.action === 'attack' && (!recoveringFromLowHealth || connection.health >= 20)) {
           runtimeState.urgentThreatQueued = true
           return true
         }
-        if (leg > 0 && !findNearestHostile(14)) return true
+        if (leg > 0 && !findNearestHostile(14)) break
         if (plan?.action === 'flee') threat = plan.target
-        advanced = await executeRetreatLeg(connection, threat, leg === 0 ? modelDecision : null)
+        advanced = await executeRetreatLeg(connection, threat, leg === 0 ? modelDecision : null, eatOnTheMove)
         if (!advanced) break
       }
+      if (meal) await meal
+      if (recoveringFromLowHealth && features.safeToEatOnRetreat(connection)) await features.restAfterRetreat(connection)
       if (advanced) await features.tryEmergencyPit(connection)
       return true
     } finally {
+      if (meal) await meal
       if (!runtimeState.impactGuards.has(connection)) features.lowerCombatShield(connection)
       runtimeState.retreatUntil = Date.now() + 6000
       runtimeState.fleeingActive = false
     }
   }
 
-  async function executeRetreatLeg(connection, threat, modelDecision) {
+  async function guardInterruptedMeal(connection) {
+    if (connection !== runtimeState.bot || !runtimeState.fleeingActive || connection.health <= 0 ||
+        runtimeState.impactGuards.has(connection) || features.safeToEatOnRetreat(connection)) return
+    const threat = findNearestHostile(7)
+    if (!threat || !hostileSight(threat).visible) return
+    runtimeState.impactGuards.add(connection)
+    try {
+      features.stopPathfinder()
+      if (!await features.equipCombatShield(connection)) return
+      if (connection !== runtimeState.bot || connection.health <= 0) return
+      const lookingAt = hostileSight(threat).center
+      await connection.lookAt(lookingAt, true)
+      if (!features.raiseCombatShield(connection, threat)) return
+      features.log('retreat shield restored after interrupted meal', { target: hostileName(threat) })
+      const origin = connection.entity.position
+      const away = origin.minus(threat.position)
+      features.stepWhileShielding(connection, lookingAt, origin.offset(away.x, 0, away.z))
+      await new Promise(resolve => setTimeout(resolve, 450))
+    } catch (error) {
+      features.log('retreat shield recovery interrupted', { message: error.message })
+    } finally {
+      runtimeState.impactGuards.delete(connection)
+      features.lowerCombatShield(connection)
+    }
+  }
+
+  async function executeRetreatLeg(connection, threat, modelDecision, onAdvance) {
       const origin = connection.entity.position.floored()
       const pursuers = nearbyThreatSignature().threats.filter(entry => entry.distance <= 14)
       const ids = new Set(pursuers.map(entry => entry.id))
@@ -292,7 +362,7 @@ function createCombat(runtimeState, features) {
         runtimeState.navigationState = { target, waypoints: [], label: 'flee' }
         features.log('fleeing', { target, threat: features.entityNameOf(threat) || null, reason: modelDecision?.reason || '' })
         try {
-          await gotoRetreatWaypoint(connection, target)
+          await gotoRetreatWaypoint(connection, target, onAdvance)
           pursuit.goals += 1
           pursuit.updated = Date.now()
           features.log('retreat waypoint reached', { target, position: connection.entity.position.floored() })
@@ -304,7 +374,7 @@ function createCombat(runtimeState, features) {
       return false
   }
 
-  async function gotoRetreatWaypoint(connection, target) {
+  async function gotoRetreatWaypoint(connection, target, onAdvance) {
     const goal = new goals.GoalNearXZ(target.x, target.z, 1)
     let lastPosition = connection.entity.position.clone()
     let lastProgress = Date.now()
@@ -313,6 +383,7 @@ function createCombat(runtimeState, features) {
       if (connection.entity.position.distanceTo(lastPosition) >= 0.35) {
         lastPosition = connection.entity.position.clone()
         lastProgress = Date.now()
+        onAdvance?.()
       } else if (Date.now() - lastProgress >= 950) {
         features.log('retreat route stalled; changing direction', { target })
         connection.pathfinder.setGoal(null)
@@ -409,7 +480,7 @@ function createCombat(runtimeState, features) {
   }
 
   function hostileName(entity) {
-    return String(entity.name || entity.displayName || '').toLowerCase().replaceAll(' ', '_')
+    return String(entity.username || entity.name || entity.displayName || '').toLowerCase().replaceAll(' ', '_')
   }
 
   function mustAvoidMelee(entity) {
@@ -492,6 +563,7 @@ function createCombat(runtimeState, features) {
       features.log('urgent threat detected', { radius: THREAT_RADIUS, threats: current.threats })
       const response = closeSignature && closeCombatPlan()
       if (response && !features.waterOwnsMovement() && !runtimeState.emergencyRetreating && !runtimeState.fleeingActive && runtimeState.lastDecision !== 'hunt-hostile') {
+        features.pauseCombatTask(runtimeState.bot)
         if (runtimeState.bot.pathfinder.goal) features.stopPathfinder()
         if (runtimeState.bot.targetDigBlock) runtimeState.bot.stopDigging()
         void features.decideAndAct('urgent-threat')
@@ -517,3 +589,4 @@ function createCombat(runtimeState, features) {
 }
 
 module.exports = createCombat
+module.exports.meleeExchange = meleeExchange

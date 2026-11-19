@@ -14,6 +14,7 @@
 | 采矿目标、挖掘动作与采木 | [`mining.js`](../agent/mining.js)、[`digging.js`](../agent/digging.js)、[`wood.js`](../agent/wood.js) |
 | 背包、工具和护甲、合成与熔炼 | [`inventory.js`](../agent/inventory.js)、[`equipment.js`](../agent/equipment.js)、[`crafting.js`](../agent/crafting.js)、[`smelting.js`](../agent/smelting.js) |
 | 战斗、撤退、盾牌与来箭格挡 | [`combat.js`](../agent/combat.js)、[`combat-defence.js`](../agent/combat-defence.js) |
+| 战斗前任务保存与脱战恢复 | [`combat-interruption.js`](../agent/combat-interruption.js) |
 | 食物、夜间避难和死亡掉落 | [`food.js`](../agent/food.js)、[`shelter.js`](../agent/shelter.js)、[`death-recovery.js`](../agent/death-recovery.js) |
 | 5×5 施工、NBT 导入、基地与红石工坊 | [`construction.js`](../agent/construction.js)、[`supply-station.js`](../supply-station.js)、[`structure-nbt.js`](../structure-nbt.js)、[`supply-base.js`](../supply-base.js) |
 | 补给后整备、建临时基地、找村庄和返程 | [`expedition.js`](../agent/expedition.js)、[`expedition-shelter.js`](../agent/expedition-shelter.js) |
@@ -28,6 +29,12 @@
 两台 Windows 电脑使用 `collab` 自动同步时，各自在其检出的仓库根目录启动同步器，具体操作见 [PowerShell 自动同步说明](AUTO-SYNC.md)。按 `AGENTS.md` 在修改前申请 [跨电脑文件锁](FILE-LOCKS.md)，确认推送后再释放。先按功能文件分工，跨模块的大改动可以暂停同步，完成后再一起保存和检查。
 
 改战斗时从 `combat.js` 或 `combat-defence.js` 开始，改基地和自动熔炉时从 `supply-base.js` 开始。功能内部的小函数和临时状态放回该模块。模块通过 `features` 调用其他模块公开的动作，跨功能共享的数据在 `agent/state.js`，共享常量和连接参数在 `agent/config.js`。增加模块才需在 `runtime.js` 装配同名工厂。涉及优先级或共享状态的改动在合并时一起核对。用 `npm run test:syntax` 检查入口及每个功能模块。
+
+## 战斗执行与恢复
+
+紧急交战由本地调度。Bot 用武器冷却、视线和攻击距离约束出手，从服务器盾牌事件、自己的盾牌耐久变化或自身位置的格挡声音识别成功格挡，再在有效反击窗口内挥刀。低血撤离时只有沿安全路径前进且与追兵拉开后才开始边走边吃，受伤或追兵逼近会中断并尝试重新举盾。战斗前记录原导航目标或已提交的采矿目标，脱战后优先恢复；死亡、掉线、跨维度或记录过期时重新规划。
+
+`node scripts/test-combat.js` 检查格挡反击判定、导航目标和采矿目标恢复。独立服的 Bot 对打用每个进程的 `MC_DUEL_OPPONENT` 指定唯一对手账号。正常运行保持此变量为空。
 
 ## 运行环境
 

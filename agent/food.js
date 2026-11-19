@@ -67,11 +67,12 @@ function createFood(runtimeState, features) {
         (distance < (RANGED_HOSTILES.has(name) ? 17 : 11) && connection.entities[id] && features.hostileSight(connection.entities[id]).visible))
   }
 
-  async function eatFoodIfNeeded({ retreat = false } = {}) {
+  async function eatFoodIfNeeded({ retreat = false, moving = false } = {}) {
     const connection = runtimeState.bot
     if (!connection?.entity || runtimeState.isEating || runtimeState.isDiggingBlock || runtimeState.isSmelting ||
         (!retreat && (runtimeState.emergencyRetreating || runtimeState.fleeingActive)) || (retreat && !safeToEatOnRetreat(connection)) ||
-        runtimeState.meleeConnection === connection || runtimeState.raisedShields.has(connection) || runtimeState.impactGuards.has(connection)) return false
+        (runtimeState.meleeConnection === connection && !(retreat && runtimeState.fleeingActive)) ||
+        runtimeState.raisedShields.has(connection) || runtimeState.impactGuards.has(connection)) return false
     const currentFood = Number(connection.food ?? 20)
     const currentHealth = Number(connection.health ?? 20)
     if (currentFood >= 18 && currentHealth >= 20) return false
@@ -92,28 +93,33 @@ function createFood(runtimeState, features) {
     const food = foods[0]
     runtimeState.isEating = true
     let safetyWatch
+    let onHurt
     try {
-      features.stopPathfinder()
+      if (!moving) features.stopPathfinder()
       await connection.equip(food, 'hand')
       if (connection !== runtimeState.bot || (retreat && !safeToEatOnRetreat(connection))) return false
-      features.log(retreat ? 'retreat food stop' : 'eating food', { item: food.name, currentFood, health: currentHealth })
+      features.log(retreat ? moving ? 'retreat food while moving' : 'retreat food stop' : 'eating food',
+        { item: food.name, currentFood, health: currentHealth })
       if (retreat) {
         const danger = new Promise((_, reject) => {
-          safetyWatch = setInterval(() => {
-            if (safeToEatOnRetreat(connection)) return
+          const cancel = () => {
             if (connection === runtimeState.bot) connection.deactivateItem()
             reject(new Error('追兵靠近，停止进食'))
-          }, 100)
+          }
+          onHurt = entity => { if (entity?.id === connection.entity?.id) cancel() }
+          connection.on('entityHurt', onHurt)
+          safetyWatch = setInterval(() => { if (!safeToEatOnRetreat(connection)) cancel() }, 75)
         })
         await Promise.race([connection.consume(), danger])
       } else await connection.consume()
-      features.log('food consumed successfully', { item: food.name, newFood: connection.food, newHealth: connection.health, retreat })
+      features.log('food consumed successfully', { item: food.name, newFood: connection.food, newHealth: connection.health, retreat, moving })
       return true
     } catch (error) {
       features.log('eating failed', { item: food.name, message: error.message })
       return false
     } finally {
       clearInterval(safetyWatch)
+      if (onHurt) connection.removeListener('entityHurt', onHurt)
       runtimeState.isEating = false
     }
   }
