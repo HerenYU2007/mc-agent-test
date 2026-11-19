@@ -10,6 +10,7 @@ const pvp = require('mineflayer-pvp').plugin
 const mineflayerViewer = require('prismarine-viewer').mineflayer
 const { Vec3 } = require('vec3')
 const { SupplyStation } = require('./supply-station')
+const { createSupplyBase } = require('./supply-base')
 
 const VERSION = process.env.MC_VERSION || '26.3'
 const HOST = process.env.MC_HOST || '127.0.0.1'
@@ -107,12 +108,51 @@ let swimFailedShore = null
 let swimBankDig = null
 let nextSwimBankDigAt = 0
 let nextCanopyAttemptAt = 0
-let diamondsSinceArmor = 0
-let resupplyAfterDiamonds = false
 let surfaceRouteActive = false
 let lastDrySurface = null
 const POST_ARMOR_DIAMONDS = 10
 const SURFACE_FOOD_TARGET = 8
+const supplyBase = createSupplyBase({
+  statePath: process.env.MC_BASE_STATE_PATH || path.join(__dirname, 'supply-base-state.json'),
+  world: JSON.stringify([HOST, PORT, USERNAME]),
+  diamondTarget: POST_ARMOR_DIAMONDS,
+  log,
+  durability: toolDurability,
+  safe: connection => canWorkHere(connection) && !fleeingActive &&
+    !damageInterruptActive(connection) && !closeCombatPlan(),
+  openSurface: openSurfaceAt,
+  goto: gotoWithTimeout,
+  woodSupply: () => plankCount() + inventoryCount(LOG_NAMES) * 4,
+  planks: makePlanksFor,
+  craft: craftNamed,
+  foodReserve,
+  eat: eatFoodIfNeeded,
+  forage: () => huntNearbyAnimalsOrForage({ stockUp: true }),
+  cookFood: cookRawMeatInFurnace,
+  wood: collectWoodWithPlan,
+  surface: approachFoodSurface,
+  explore: exploreOneStep,
+  smeltIron: () => processFurnaceBatch(new Set(['raw_iron']), 'base materials smelted', 95000,
+    item => IRON_FUEL_NAMES.has(item.name)),
+  starterGear: prepareStarterGear,
+  mine: async objective => {
+    if (mineNeedsNewGround) {
+      mineNeedsNewGround = false
+      const y = Math.floor(bot.entity.position.y)
+      const floor = objective.kind === 'redstone' ? 8 : objective.kind === 'iron' ? 28 : null
+      const riseToStone = objective.kind === 'stone' && objective.names[0] === 'cobblestone' &&
+        objective.names.length === 1 && y < 8
+      if (riseToStone || (floor !== null && y > floor + 2)) {
+        const targetY = riseToStone ? Math.min(8, y + 8) : Math.max(floor, y - 8)
+        if (await prospectMiningLevel(targetY)) return
+      }
+      if (!canWorkHere(bot) || closeCombatPlan()) return
+      await exploreOneStep()
+      return
+    }
+    await mineForGear(null, objective.kind, null, { objective })
+  },
+})
 // When set, the swim controller heads for this far shore instead of the
 // nearest ledge (used to leave a platform the bot built in the sea).
 let swimOverride = null
@@ -160,6 +200,7 @@ const DEFAULT_MINE_TARGET_NAMES = new Set([
 ])
 let mineTargetNames = new Set(DEFAULT_MINE_TARGET_NAMES)
 let currentMineOrder = null
+let baseProspecting = false
 let lastMineAudit = null
 let committedMineTarget = null
 const mineBlacklist = new Map()
@@ -356,7 +397,7 @@ function startDashboard() {
         health: bot?.health ?? null,
         food: bot?.food ?? null,
         foodRecovery: recoveringFood,
-        resupply: { diamonds: diamondsSinceArmor, active: resupplyAfterDiamonds },
+        resupply: supplyBase.resupplyStatus(),
         supplyStation: supplyStation.status(),
         ...(bot?.entity ? {
           coal: inventoryItemCount('coal'),
@@ -377,6 +418,7 @@ function startDashboard() {
         version: bot?.version || VERSION,
         botConnected: Boolean(bot?.entity),
         botEnabled,
+        supplyBase: supplyBase.status(),
         navigation: visibleNavigationState(),
         deathPoint: deathPoint && !deathPoint.done
           ? { x: deathPoint.x, y: deathPoint.y, z: deathPoint.z, attempts: deathPoint.attempts, ageSeconds: Math.round((Date.now() - deathPoint.diedAt) / 1000) }
@@ -427,7 +469,7 @@ function observerState() {
     actual: audit?.actual, mineResult: audit?.result, combatReason: lastCombatDecision?.reason,
     modelAction: lastModelDecision?.action, modelReason: lastModelDecision?.reason,
     tokens: { total: modelUsage.totalTokens, input: lastCall?.promptTokens, output: lastCall?.completionTokens },
-    resupply: { diamonds: diamondsSinceArmor, active: resupplyAfterDiamonds },
+    resupply: supplyBase.resupplyStatus(),
     inventory: {
       backpack: inventory.slots.slice(inventory.inventoryStart, inventory.hotbarStart).map(observerItem),
       hotbar: inventory.slots.slice(inventory.hotbarStart, inventory.inventoryEnd).map(observerItem),
@@ -622,6 +664,10 @@ async function recoverFoodSupply() {
   const connection = bot
   lastDecision = 'hunt-food'
   log('food recovery priority', { food: connection.food, target: committedMineTarget?.position ?? null })
+  if (!foodReserve() && await supplyBase.recoverFood(connection) && !foodRecoveryNeeded(connection)) {
+    log('food recovery complete', { food: connection.food, source: 'supply-base' })
+    return
+  }
   if (!await huntNearbyAnimalsOrForage() && foodRecoveryNeeded(connection) &&
       canWorkHere(connection) && !closeCombatPlan()) {
     if (nightShelterTerrain() === 'covered') {
@@ -636,6 +682,9 @@ async function recoverFoodSupply() {
 }
 
 function computeStage(s) {
+  if (supplyBase.active(bot)) {
+    return { name: 'supply_base', hint: '建立并维护补给基地和红石工坊', allowed: null }
+  }
   if (isNightShelterTime(s.timeOfDay) && s.nightShelterTerrain === 'open' &&
       (nightsSheltered < 1 || !s.hasSword)) {
     return { name: 'first_night', hint: '天黑了：做床睡觉，没有床就挖三格深的坑并封住头顶，等天亮', allowed: null }
@@ -1597,8 +1646,9 @@ function discardCandidates(connection, window, keep) {
   const reserves = INVENTORY_RESERVES.map(([names, minimum]) => ({ names, minimum,
     count: items.reduce((total, item) => total + (names.has(item.name) ? item.count : 0), 0) }))
   const equipment = connection.inventory.slots.filter(Boolean)
+  const reservingBaseGear = supplyBase.active(connection)
   const obsolete = item => {
-    if (item.enchants?.length) return false
+    if (item.enchants?.length || (reservingBaseGear && supplyBase.keeps(item))) return false
     const [material, type] = item.name.split('_')
     const armorIndex = ARMOR_SLOTS.findIndex(([, kind]) => kind === type)
     if (armorIndex >= 0 && ARMOR_DEFENSE[material]) {
@@ -2031,7 +2081,7 @@ async function ensureFurnace(stations = null) {
   if (!canWorkHere(connection)) return null
   if (!stations) {
     const existing = findNearestBlock(FURNACE_NAMES, 4)
-    if (furnaceReachable(connection, existing)) return existing
+    if (furnaceReachable(connection, existing) && !supplyBase.owns(connection, existing.position)) return existing
     if (temporaryFurnace) return null
   }
   // A furnace broken without a pickaxe will not drop as an item.
@@ -2650,10 +2700,12 @@ async function surfaceResupply() {
   lastDecision = 'hunt-food'
   if (foodReserve() < SURFACE_FOOD_TARGET && !await huntNearbyAnimalsOrForage({ stockUp: true }) &&
       canWorkHere(connection) && !closeCombatPlan()) await exploreOneStep()
-  if (canWorkHere(connection) && foodReserve() >= SURFACE_FOOD_TARGET) {
-    log('surface resupply complete', { foodItems: foodReserve(), diamonds: diamondsSinceArmor })
-    resupplyAfterDiamonds = false
-    diamondsSinceArmor = 0
+  const foodItems = foodReserve()
+  if (canWorkHere(connection) && !closeCombatPlan() && foodItems >= SURFACE_FOOD_TARGET &&
+      openSurfaceAt(connection, connection.entity.position.floored()) && supplyBase.completeResupply()) {
+    const { diamonds } = supplyBase.qualification()
+    log('surface resupply complete', { foodItems, diamonds })
+    log('supply base unlocked after resupply', { foodItems, diamonds })
   }
 }
 
@@ -3133,8 +3185,14 @@ function planMineTarget() {
 async function minePlannerTick(reason = 'tick') {
   if (!mineMode || mineBusy || busy || !botEnabled || !bot?.entity || !movements) return false
   if (emergencyRetreating || fleeingActive || waterOwnsMovement() || foodRecoveryNeeded() || bot.health <= 0) return false
+  if (supplyBase.active(bot) && !['base', 'station'].includes(currentMineOrder?.source)) {
+    finishMineObjective()
+    void decideAndAct('mine-complete')
+    return false
+  }
   if (Date.now() < nextMineSearchAt) return false
-  if (Date.now() >= nextGearCraftRetryAt && readyGearUpgrades().length && !closeCombatPlan()) {
+  if (!['base', 'station'].includes(currentMineOrder?.source) &&
+      Date.now() >= nextGearCraftRetryAt && readyGearUpgrades().length && !closeCombatPlan()) {
     void decideAndAct('gear-ready')
     return false
   }
@@ -3227,9 +3285,7 @@ async function minePlannerTick(reason = 'tick') {
       /^(deepslate_)?lapis_ore$/.test(current.name) ? new Set(['lapis_lazuli']) :
       /^(deepslate_)?emerald_ore$/.test(current.name) ? new Set(['emerald']) : new Set([current.name])
     const before = inventoryCount(drops)
-    const countedDiamond = drops.has('diamond') && ARMOR_SLOTS.every(([slot, type]) =>
-      /^(diamond|netherite)_/.test(bot.inventory.slots[bot.getEquipmentDestSlot(slot)]?.name ?? '') &&
-      bot.inventory.slots[bot.getEquipmentDestSlot(slot)]?.name.endsWith(`_${type}`))
+    const countedDiamond = drops.has('diamond') && needsPostArmorDiamonds(bot)
     await maybePlaceTorch(true)
     if (interrupted()) return false
     if (!await digWithExposure(current, mineTargetNames)) {
@@ -3245,14 +3301,13 @@ async function minePlannerTick(reason = 'tick') {
     log('mine target mined', { block: current.name, position: target })
     const pickedUp = await pickUpBlockDrop(drops, target, before, true)
     log('mine pickup result', { block: current.name, pickedUp })
-    if (countedDiamond && pickedUp) {
-      diamondsSinceArmor += Math.max(0, inventoryItemCount('diamond') - before)
-      log('post-armor diamonds collected', { count: diamondsSinceArmor, target: POST_ARMOR_DIAMONDS })
-      if (diamondsSinceArmor >= POST_ARMOR_DIAMONDS) {
-        resupplyAfterDiamonds = true
+    if (countedDiamond && pickedUp && supplyBase.recordDiamonds(inventoryItemCount('diamond') - before)) {
+      const { diamonds, target, needsResupply } = supplyBase.qualification()
+      log('post-armor diamonds collected', { count: diamonds, target })
+      if (needsResupply) {
         mineMode = false
         activeGoal = null
-        log('surface resupply required after diamonds', { diamonds: diamondsSinceArmor })
+        log('surface resupply required after diamonds', { diamonds })
         objectiveReached = true
       }
     }
@@ -3273,6 +3328,15 @@ async function minePlannerTick(reason = 'tick') {
 
 function finishMineObjective() {
   if (!mineMode || !bot?.entity || !mineTargetNames.size) return false
+  if (supplyBase.active(bot) && currentMineOrder?.source !== 'station') {
+    const objective = currentMineOrder?.objective
+    if (objective && Date.now() < objective.until && foodReserve() >= 3 &&
+        inventoryCount(new Set(objective.names)) < objective.target) return false
+    mineMode = false
+    committedMineTarget = null
+    activeGoal = null
+    return true
+  }
   const targets = [...mineTargetNames]
   const coal = inventoryItemCount('coal')
   const fuel = coal + inventoryItemCount('charcoal')
@@ -3286,12 +3350,16 @@ function finishMineObjective() {
   const upgrade = nextIronUpgrade()
   const ironReady = targets.every(name => IRON_INPUT_NAMES.has(name)) && upgrade &&
     (ingots >= upgrade.cost || (fuel > 0 && raw + ingots >= upgrade.cost))
-  if (!stoneReady && !coalReady && !ironReady) return false
+  const diamondPriority = currentMineOrder?.source !== 'station' && needsPostArmorDiamonds(bot) && hasDiamondMiningTool(bot) &&
+    !targets.every(name => /^(deepslate_)?diamond_ore$/.test(name))
+  if (!stoneReady && !coalReady && !ironReady && !diamondPriority) return false
   mineMode = false
   committedMineTarget = null
   mineNeedsNewGround = false
   if (activeGoal?.type === 'mine') activeGoal = null
-  log('mine objective ready; advancing', { resource: stoneReady ? 'stone' : coalReady ? 'coal' : 'iron', coal, raw, ingots })
+  log('mine objective ready; advancing', {
+    resource: diamondPriority ? 'post-armor diamonds' : stoneReady ? 'stone' : coalReady ? 'coal' : 'iron', coal, raw, ingots,
+  })
   return true
 }
 
@@ -3311,17 +3379,21 @@ function recordMineAudit(result, block = null) {
   }[result] })
 }
 
-async function mineForGear(modelTarget = null, targetName = '', requested = null, stoneLimit = null, stoneDrop = null) {
+async function mineForGear(modelTarget = null, targetName = '', requested = null,
+  { objective = null, stoneLimit = null, stoneDrop = null } = {}) {
   if (foodRecoveryNeeded()) return false
   if (!bot.inventory.items().some(item => item.name.endsWith('_pickaxe'))) {
     log('mining refused; no pickaxe equipped or available')
     persistExperience({ cycle, action: 'mine-blocked', experience: '没有镐，禁止进入挖矿执行器' })
     return false
   }
-  const targets = stoneDrop ? new Set([stoneDrop === 'cobblestone' ? 'stone' : 'deepslate']) : mineTargetSetFromName(targetName)
+  const exactStone = stoneDrop ?? (objective?.kind === 'stone' && objective.names.length === 1 ? objective.names[0] : null)
+  const targets = exactStone ? new Set([exactStone === 'cobbled_deepslate' ? 'deepslate' : 'stone']) : mineTargetSetFromName(targetName)
   if (committedMineTarget && !targets.has(committedMineTarget.block.name)) committedMineTarget = null
   mineTargetNames = targets
-  currentMineOrder = { cycle, requested, target: targetName || 'general', source: requested ? 'model' : 'survival' }
+  currentMineOrder = { cycle, requested, target: targetName || 'general',
+    source: objective ? 'base' : stoneLimit ? 'station' : requested ? 'model' : 'survival' }
+  if (objective) currentMineOrder.objective = objective
   if (stoneLimit) currentMineOrder.stoneLimit = stoneLimit
   if (stoneDrop) currentMineOrder.stoneDrop = stoneDrop
   mineMode = mineTargetNames.size > 0
@@ -3499,6 +3571,7 @@ async function clearBlockerFor(target) {
   const hit = connection.world.raycast(eyes, ray.unit(), range)
   const blocker = hit ? connection.blockAt(hit.position ?? hit) : null
   if (!blocker || blocker.position.equals(target.position)) return false
+  if (supplyBase.owns(connection, blocker.position)) return false
   if (mineBusy && isOreName(blocker.name)) return false
   if (!TUNNEL_SAFE_BLOCKS.has(blocker.name) || !connection.canDigBlock(blocker)) return false
   // Never dig out the block under the bot's feet.
@@ -3714,100 +3787,175 @@ async function collectNearbyDrops(maxDistance = 16, maxCount = 6) {
   return collected
 }
 
-function inventoryTotal() {
-  return bot.inventory.items().reduce((sum, item) => sum + item.count, 0)
+const DEATH_RECOVERY_ATTEMPTS = 2
+const DEATH_RECOVERY_COOLDOWN_MS = 25000
+const VALUABLE_DEATH_GEAR = /^(iron|diamond|netherite)_(pickaxe|axe|sword|shovel|hoe|helmet|chestplate|leggings|boots)$/
+const VALUABLE_DEATH_ITEMS = new Set([
+  'diamond', 'netherite_scrap', 'netherite_ingot', 'ancient_debris', 'elytra',
+  'totem_of_undying', 'enchanted_golden_apple',
+])
+
+function carriedStackCounts(connection, valuableOnly = false) {
+  const inventory = connection.inventory
+  const items = [...inventory.items()]
+  for (const slot of ['head', 'torso', 'legs', 'feet', 'off-hand']) {
+    const item = inventory.slots[connection.getEquipmentDestSlot(slot)]
+    if (item && !items.includes(item)) items.push(item)
+  }
+  const counts = new Map()
+  const wanted = new Set()
+  for (const item of items) {
+    counts.set(item.name, (counts.get(item.name) ?? 0) + item.count)
+    if (VALUABLE_DEATH_GEAR.test(item.name) || VALUABLE_DEATH_ITEMS.has(item.name) || item.enchants?.length) {
+      wanted.add(item.name)
+    }
+  }
+  if (!valuableOnly) return counts
+  for (const [name, minimum] of [['raw_iron', 4], ['iron_ingot', 4], ['emerald', 4]]) {
+    if ((counts.get(name) ?? 0) >= minimum) wanted.add(name)
+  }
+  return new Map([...wanted].map(name => [name, counts.get(name)]))
 }
 
-// Baritone-style `goto` to the death coordinates, then pick up what is there.
-// The route is a GoalNear toward the point (not a straight line), walked in
-// legs so a failed leg re-plans from where the bot actually is. Success is
-// judged by the inventory count, not by reaching the coordinate.
+function deathRecoveryDue(connection = bot) {
+  return deathPoint && !deathPoint.done && Date.now() >= deathPoint.nextAttemptAt &&
+    connection?.entity && connection.health >= 16 && connection.food >= 14
+}
+
+function finishDeathRecovery(point, reason, details = {}) {
+  point.done = true
+  log('death recovery finished', { reason, attempts: point.attempts, ...details })
+}
+
+function deferDeathRecovery(point, reason, target = null) {
+  if (point.attempts >= DEATH_RECOVERY_ATTEMPTS) {
+    finishDeathRecovery(point, reason)
+    return
+  }
+  point.nextAttemptAt = Date.now() + DEATH_RECOVERY_COOLDOWN_MS
+  log('death recovery deferred', { reason, target, attempts: point.attempts })
+}
+
+function deathRecoveryThreat(connection, site) {
+  const origin = connection.entity.position
+  return Object.values(connection.entities).find(entity => {
+    if (!entity.position || !isHostileEntity(entity)) return false
+    const name = hostileName(entity)
+    const reach = RANGED_HOSTILES.has(name) ? 16 : name === 'creeper' ? 11 : 8
+    return entity.position.distanceTo(origin) <= reach || entity.position.distanceTo(site) <= reach
+  })
+}
+
 async function recoverDeathDrops() {
   const point = deathPoint
-  if (!point || point.done || recoveringDeathDrops) return false
-  if (!bot?.entity || bot.health <= 0 || waterOwnsMovement() || emergencyRetreating) return false
-  if (point.dimension !== (bot.game?.dimension ?? 'overworld')) {
-    log('death point is in another dimension; giving up', { point })
-    point.done = true
-    return false
-  }
-  if (Date.now() - point.diedAt > DEATH_DROP_LIFETIME_MS - 15000) {
-    log('death drops have despawned; giving up', { ageSeconds: Math.round((Date.now() - point.diedAt) / 1000) })
-    persistExperience({ cycle, action: 'death-recovery', experience: '超过 5 分钟，掉落物已消失，放弃回收' })
-    point.done = true
-    return false
-  }
-  // Do not walk into a fight with nothing to defend with: let the normal threat
-  // handling run first, and come back on a later cycle.
-  const threat = findNearestHostile(16)
-  if (threat && (bot.health < 12 || !hasTool('sword'))) return false
-
   const connection = bot
-  const canContinue = () => bot === connection && botEnabled && connection.entity &&
-    connection.health > 0 && !point.done && !waterOwnsMovement() && !emergencyRetreating &&
-    Date.now() - point.diedAt < DEATH_DROP_LIFETIME_MS
+  if (!point || point.done || recoveringDeathDrops || !canWorkHere(connection)) return false
+  if (point.dimension !== (connection.game?.dimension ?? 'overworld')) {
+    finishDeathRecovery(point, 'another-dimension')
+    return false
+  }
+  const expiresAt = point.diedAt + DEATH_DROP_LIFETIME_MS - 15000
+  if (Date.now() >= expiresAt) {
+    finishDeathRecovery(point, 'expired')
+    return false
+  }
+  if (!deathRecoveryDue(connection)) return false
+
+  const goalPoint = new Vec3(point.x, point.y, point.z)
+  const before = carriedStackCounts(connection)
+  const missing = new Set([...point.loot].filter(([name, count]) => (before.get(name) ?? 0) < count).map(([name]) => name))
+  if (!missing.size) {
+    finishDeathRecovery(point, 'gear-already-carried')
+    return false
+  }
+  const siteUnsafe = () => {
+    const site = connection.blockAt(goalPoint)
+    return goalPoint.y < connection.game.minY || (site && (isWaterBlock(site) || /lava|fire/.test(site.name)))
+  }
+  if (siteUnsafe()) {
+    finishDeathRecovery(point, 'unsafe-terrain')
+    return false
+  }
+  const firstThreat = deathRecoveryThreat(connection, goalPoint)
+  if (firstThreat) {
+    deferDeathRecovery(point, 'hostile-nearby', hostileName(firstThreat))
+    return false
+  }
+
+  const startingHealth = connection.health
+  const interruption = () => {
+    if (point.done || bot !== connection || !botEnabled || !connection.entity || connection.health <= 0 ||
+        Date.now() >= expiresAt) return { reason: 'interrupted' }
+    if (connection.health < startingHealth) return { reason: 'damage', urgent: true }
+    if (siteUnsafe()) return { reason: 'unsafe-terrain' }
+    if (connection.food < 14 || waterOwnsMovement() || emergencyRetreating || fleeingActive) return { reason: 'survival-priority' }
+    const threat = deathRecoveryThreat(connection, goalPoint)
+    if (threat) return { reason: 'hostile-nearby', target: hostileName(threat),
+      urgent: threat.position.distanceTo(connection.entity.position) <= THREAT_RADIUS }
+    return null
+  }
+
+  let stopped = null
+  const walk = async (goal, label, timeout) => {
+    const watch = setInterval(() => {
+      stopped ??= interruption()
+      if (stopped && bot === connection && connection.pathfinder.goal === goal) connection.pathfinder.setGoal(null)
+    }, 100)
+    try {
+      await gotoWithTimeout(goal, label, timeout)
+    } catch (error) {
+      if (!stopped) log('death recovery path interrupted', { message: error.message })
+    } finally {
+      clearInterval(watch)
+    }
+    stopped ??= interruption()
+    return !stopped
+  }
+
+  const nearbyDeathDrops = () => findNearbyDrops(10).filter(({ entity }) =>
+    entity.position.distanceTo(goalPoint) <= 8 && missing.has(droppedStack(entity)?.name))
   const stillNearby = () => connection.entity.position.distanceTo(goalPoint) <= 4
-  const nearbyDeathDrops = () => findNearbyDrops(10)
-    .filter(({ entity }) => entity.position.distanceTo(goalPoint) <= 8)
+  const travel = connection.entity.position.distanceTo(goalPoint)
   recoveringDeathDrops = true
   mineMode = false
   point.attempts += 1
-  const before = inventoryTotal()
-  const goalPoint = new Vec3(point.x, point.y, point.z)
-  log('recovering death drops', { point: { x: point.x, y: point.y, z: point.z }, attempt: point.attempts })
+  lastDecision = 'death-recovery'
+  navigationState = { target: { x: point.x, y: point.y, z: point.z, name: 'death-point' }, waypoints: [], label: 'death-recovery' }
+  log('recovering death drops', { point: goalPoint, attempt: point.attempts, wanted: [...missing] })
   try {
-    if (!stillNearby()) {
-      const remaining = connection.entity.position.distanceTo(goalPoint)
-      navigationState = { target: { x: point.x, y: point.y, z: point.z, name: 'death-point' }, waypoints: [], label: 'death-recovery' }
-      lastDecision = 'death-recovery'
-      try {
-        await gotoWithTimeout(new goals.GoalNear(point.x, point.y, point.z, 2), 'death recovery path', Math.min(16000, 5000 + remaining * 400))
-      } catch (error) {
-        if (bot === connection && navigationState.label === 'death-recovery') stopPathfinder()
-        log('death recovery path interrupted', { remaining: Number(remaining.toFixed(1)), message: error.message })
-      }
-    }
-    if (!canContinue()) return false
-    const reached = stillNearby()
-    // A nearby goal can end outside pickup range. Sweep the actual death cell
-    // when no item entity has been reported yet after respawn.
-    if (reached && nearbyDeathDrops().length === 0 && !connection.entity.position.floored().equals(goalPoint)) {
-      try {
-        await gotoWithTimeout(new goals.GoalBlock(point.x, point.y, point.z), 'death point sweep', 3500)
-        await new Promise(resolve => setTimeout(resolve, 250))
-      } catch (error) {
-        log('death point sweep interrupted', { message: error.message })
-      }
-    }
-    // Only count inventory changes after reaching the site, or when pursuing
-    // a visible drop near it. Passing above the site is not a recovery.
-    const attemptedDrops = new Set()
-    for (let i = 0; i < 3 && canContinue(); i += 1) {
-      const target = nearbyDeathDrops().find(({ entity }) => !attemptedDrops.has(entity.id))?.entity
-      if (!target) break
-      attemptedDrops.add(target.id)
-      try {
+    if (!stillNearby()) await walk(new goals.GoalNear(point.x, point.y, point.z, 3), 'death recovery path', Math.min(16000, 5000 + travel * 400))
+    if (!stopped && stillNearby()) {
+      const tried = new Set()
+      for (let i = 0; i < 4 && !interruption(); i += 1) {
+        const target = nearbyDeathDrops().find(({ entity }) => !tried.has(entity.id))?.entity
+        if (!target) break
+        tried.add(target.id)
         const feet = target.position.floored()
-        await gotoWithTimeout(new goals.GoalBlock(feet.x, feet.y, feet.z), 'death drop pickup', 3500)
-      } catch (error) {
-        log('death drop pickup interrupted', { entityId: target.id, message: error.message })
+        if (!await walk(new goals.GoalBlock(feet.x, feet.y, feet.z), 'valuable death drop pickup', 3500)) break
+        await new Promise(resolve => setTimeout(resolve, 250))
       }
-      await new Promise(resolve => setTimeout(resolve, 250))
     }
-    if (!canContinue()) return false
-    const gained = reached || attemptedDrops.size ? Math.max(0, inventoryTotal() - before) : 0
-    const dropsLeft = nearbyDeathDrops().length
+    stopped ??= interruption()
+    if (stopped) {
+      if (!point.done) {
+        if (stopped.reason === 'unsafe-terrain') finishDeathRecovery(point, stopped.reason)
+        else deferDeathRecovery(point, stopped.reason, stopped.target)
+      }
+      if (stopped.urgent) urgentThreatQueued = true
+      return true
+    }
+    const after = carriedStackCounts(connection)
+    const gained = [...missing].reduce((sum, name) => sum + Math.max(0, (after.get(name) ?? 0) - (before.get(name) ?? 0)), 0)
+    const reached = stillNearby()
+    const dropsLeft = reached ? nearbyDeathDrops().length : null
     log('death recovery result', { gained, dropsLeft, reached, attempt: point.attempts })
-    if (gained > 0 && dropsLeft === 0) {
-      point.done = true
-      persistExperience({ cycle, action: 'death-recovery', experience: `回到死亡点，捡回 ${gained} 个物品` })
-    } else if (point.attempts >= 3) {
-      point.done = true
-      persistExperience({ cycle, action: 'death-recovery', experience: reached
-        ? '三次尝试后死亡点仍没有可确认的掉落物回收，结束回收'
-        : '三次尝试仍无法到达地下死亡点，恢复生存任务' })
+    if (gained && dropsLeft === 0) {
+      finishDeathRecovery(point, 'valuable-loot-recovered', { gained })
+      persistExperience({ cycle, action: 'death-recovery', experience: `回收 ${gained} 个值得取回的掉落物` })
+    } else {
+      deferDeathRecovery(point, reached ? 'valuable-loot-unconfirmed' : 'unreachable')
     }
-    return gained > 0
+    return true
   } finally {
     if (bot === connection && navigationState.label === 'death-recovery') clearNavigation('death-recovery-done')
     recoveringDeathDrops = false
@@ -3822,7 +3970,7 @@ async function gatherStationStone(count, ready, exact = null) {
     mineNeedsNewGround = false
     await exploreOneStep()
   } else if (ready()) {
-    await mineForGear(null, 'stone', null, count, exact)
+    await mineForGear(null, 'stone', null, { stoneLimit: count, stoneDrop: exact })
   }
 }
 
@@ -4695,6 +4843,46 @@ function equippedArmorCount() {
     .filter(item => /_(helmet|chestplate|leggings|boots)$/.test(item?.name || '')).length
 }
 
+function hasDiamondArmor(connection) {
+  return ARMOR_SLOTS.every(([slot, type]) => {
+    const name = connection.inventory.slots[connection.getEquipmentDestSlot(slot)]?.name ?? ''
+    return name === `diamond_${type}` || name === `netherite_${type}`
+  })
+}
+
+function needsPostArmorDiamonds(connection) {
+  const milestone = supplyBase.qualification()
+  return connection.game?.dimension === 'overworld' && !milestone.unlocked &&
+    !milestone.needsResupply && hasDiamondArmor(connection)
+}
+
+function hasDiamondMiningTool(connection) {
+  return connection.inventory.items().some(item => /^(iron|diamond|netherite)_pickaxe$/.test(item.name))
+}
+
+async function minePostArmorDiamonds() {
+  if (mineNeedsNewGround) {
+    mineNeedsNewGround = false
+    const y = Math.floor(bot.entity.position.y)
+    if (y > -48 && await prospectMiningLevel(Math.max(-48, y - 8))) return
+    if (canWorkHere(bot) && !closeCombatPlan()) await exploreOneStep()
+    return
+  }
+  await mineForGear(null, 'diamond')
+}
+
+async function prospectMiningLevel(y) {
+  baseProspecting = true
+  try {
+    await gotoWithTimeout(new goals.GoalY(y), 'prospect towards mining level', 12000)
+    return true
+  } catch {
+    return false
+  } finally {
+    baseProspecting = false
+  }
+}
+
 function hostileName(entity) {
   return String(entity.name || entity.displayName || '').toLowerCase().replaceAll(' ', '_')
 }
@@ -4741,8 +4929,9 @@ async function decideAndAct(trigger = 'scheduled') {
     return
   }
 
-  if (!immediate && resupplyAfterDiamonds && !emergencyShelteredUntil && !shelteredUntilDawn &&
-      !(deathPoint && !deathPoint.done)) {
+  if (!immediate && bot.game?.dimension === 'overworld' && supplyBase.qualification().needsResupply &&
+      !emergencyShelteredUntil && !shelteredUntilDawn &&
+      !deathRecoveryDue()) {
     if (busy || mineBusy || isEating || isSmelting || isDiggingBlock || shelterBusy) return
     mineMode = false
     activeGoal = null
@@ -4794,8 +4983,8 @@ async function decideAndAct(trigger = 'scheduled') {
 
   // Defer non-urgent decisions if in active mineMode with working tools
   if (mineMode && !busy && !mineBusy) finishMineObjective()
-  if (!immediate && !busy && !mineBusy && !isSmelting && !isEating && !isDiggingBlock &&
-      !bot?.targetDigBlock && !(deathPoint && !deathPoint.done) && !shelteredUntilDawn && !emergencyShelteredUntil &&
+  if (!immediate && !supplyBase.active(bot) && !busy && !mineBusy && !isSmelting && !isEating && !isDiggingBlock &&
+      !bot?.targetDigBlock && !deathRecoveryDue() && !shelteredUntilDawn && !emergencyShelteredUntil &&
       Date.now() >= nextGearCraftRetryAt && canWorkHere(bot)) {
     if (readyGearUpgrades().length) {
       busy = true
@@ -4818,6 +5007,8 @@ async function decideAndAct(trigger = 'scheduled') {
       return
     }
   }
+  if (!busy && !mineBusy && (supplyBase.active(bot) ||
+      (needsPostArmorDiamonds(bot) && hasDiamondMiningTool(bot)))) activeGoal = null
 
   // TASK COMMITMENT PROTECTION:
   // If we have an active ongoing goal, do NOT let scheduled ticks re-query DeepSeek or thrash actions!
@@ -4904,13 +5095,9 @@ async function decideAndAct(trigger = 'scheduled') {
     latestState = state
     log('state', state)
 
-    // After a death, going back for the dropped stack comes before anything the
-    // model proposes (items despawn five minutes after death).
-    if (deathPoint && !deathPoint.done && !shelteredUntilDawn) {
+    if (!immediate && deathPoint && !deathPoint.done && !shelteredUntilDawn) {
       if (await recoverDeathDrops()) return
       if (!bot?.entity || bot.health <= 0 || waterOwnsMovement()) return
-      state = snapshot()
-      if (!deathPoint.done) lastDecision = 'death-recovery'
     }
 
     const furnaceToRecover = pendingFurnaceBatch || temporaryFurnace
@@ -4976,9 +5163,18 @@ async function decideAndAct(trigger = 'scheduled') {
       await buildSupplyStation()
       return
     }
+    if (!immediate && !closeCombatPlan() && needsPostArmorDiamonds(bot) && hasDiamondMiningTool(bot)) {
+      await minePostArmorDiamonds()
+      return
+    }
     const stage = computeStage(state)
     state.stage = stage.name
     state.stageHint = stage.hint
+    if (stage.name === 'supply_base' && !closeCombatPlan() && canWorkHere(bot)) {
+      lastDecision = 'supply-base'
+      await supplyBase.run(bot)
+      return
+    }
     const upgrade = nextIronUpgrade()
     const ironReady = state.rawIron > 0 && state.coal + state.charcoal > 0 &&
       (!upgrade || state.rawIron + inventoryItemCount('iron_ingot') >= upgrade.cost)
@@ -5355,7 +5551,7 @@ function createBotConnection() {
     movements = new Movements(connection, mcData)
     movements.canDig = true
     movements.exclusionAreasBreak.push(block =>
-      supplyStation.protects(connection, block?.position) || (!mineBusy && !surfaceRouteActive) ? 100 : 0)
+      supplyStation.protects(connection, block?.position) || !(mineBusy || surfaceRouteActive || baseProspecting) ? 100 : 0)
     movements.allow1by1towers = true
     movements.allowParkour = true
     movements.placeCost = 2.5
@@ -5370,6 +5566,7 @@ function createBotConnection() {
     movements.exclusionAreasStep.push(block => (block && WATER_BLOCK_NAMES.has(block.name) ? 500 : 0))
     movements.exclusionAreasStep.push(block => discardTileCost(connection, block))
     movements.blocksCantBreak.add(mcData.blocksByName[TABLE_NAME].id)
+    movements.exclusionAreasBreak.push(block => supplyBase.owns(connection, block?.position) ? Infinity : 0)
     for (const block of mcData.blocksArray) {
       if (LOG_NAMES.has(block.name) || isOreName(block.name)) movements.blocksCantBreak.add(block.id)
     }
@@ -5410,6 +5607,16 @@ function createBotConnection() {
     }
   })
 
+  // Inventory-clear packets can arrive just before the death health update.
+  let recentRecoveryLoot = null
+  let nextLootSampleAt = 0
+  connection.on('physicsTick', () => {
+    const now = Date.now()
+    if (connection.health <= 0 || now < nextLootSampleAt) return
+    nextLootSampleAt = now + 100
+    const loot = carriedStackCounts(connection, true)
+    if (loot.size) recentRecoveryLoot = { loot, at: now }
+  })
   connection.on('health', () => {
     if (connection.health < 8) log('health critical', { health: connection.health, food: connection.food })
     monitorFood(connection)
@@ -5427,23 +5634,29 @@ function createBotConnection() {
     swimmingMode = false
     swimShore = swimProgress = swimFailedShore = null
     supplyStation.interrupt(log, 'death')
-    // Record the death point before anything resets the position. Keep the
-    // older point if we die again before reaching it: that stack is still there.
-    const where = connection.entity?.position
-    if (where && (!deathPoint || deathPoint.done)) {
-      deathPoint = {
-        x: Math.floor(where.x), y: Math.floor(where.y), z: Math.floor(where.z),
-        dimension: connection.game?.dimension ?? 'overworld',
-        diedAt: Date.now(), attempts: 0, done: false,
+    const where = connection.entity?.position.floored()
+    const loot = carriedStackCounts(connection, true)
+    if (recentRecoveryLoot && Date.now() - recentRecoveryLoot.at < 1000) {
+      for (const [name, count] of recentRecoveryLoot.loot) loot.set(name, Math.max(count, loot.get(name) ?? 0))
+    }
+    recentRecoveryLoot = null
+    if (deathPoint && !deathPoint.done) {
+      if (recoveringDeathDrops || (where && deathPoint.dimension === connection.game?.dimension &&
+          where.distanceTo(new Vec3(deathPoint.x, deathPoint.y, deathPoint.z)) <= 12)) {
+        finishDeathRecovery(deathPoint, 'died-during-recovery')
+      } else {
+        deferDeathRecovery(deathPoint, 'died-before-recovery')
       }
-      log('death point recorded', { x: deathPoint.x, y: deathPoint.y, z: deathPoint.z, dimension: deathPoint.dimension })
-      persistExperience({ cycle, action: 'death', experience: `在 (${deathPoint.x}, ${deathPoint.y}, ${deathPoint.z}) 死亡，重生后去那里捡回掉落物` })
-    } else if (deathPoint && !deathPoint.done) {
-      deathPoint.attempts = (deathPoint.attempts || 0) + 1
-      log('died again before recovering items; attempt incremented', { x: deathPoint.x, y: deathPoint.y, z: deathPoint.z, attempt: deathPoint.attempts })
-      if (deathPoint.attempts >= 3) {
-        deathPoint.done = true
-        log('max death recovery attempts reached; abandoning death point')
+    } else if (where) {
+      if (loot.size) {
+        deathPoint = {
+          x: where.x, y: where.y, z: where.z, loot,
+          dimension: connection.game?.dimension ?? 'overworld',
+          diedAt: Date.now(), attempts: 0, done: false, nextAttemptAt: Date.now() + 1800,
+        }
+        log('death point recorded', { position: where, dimension: deathPoint.dimension, loot: [...loot] })
+      } else {
+        log('death recovery skipped', { reason: 'low-value-loot', position: where })
       }
     }
     log('agent died; waiting for respawn')

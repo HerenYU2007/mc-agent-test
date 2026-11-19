@@ -25,6 +25,10 @@ class StationPlacementGoal extends goals.GoalPlaceBlock {
     })
   }
 
+  isEnd(node) {
+    return !this.unusableFeet?.equals(node) && super.isEnd(node)
+  }
+
   hitFrom(bot) {
     if (this.isStandingIn(bot.entity.position.floored())) return null
     return this.getFaceAndRef(bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0))
@@ -361,6 +365,9 @@ class SupplyStation {
     if (!goal.facesPos.length) return false
     let target = goal.hitFrom(bot)
     if (!target) {
+      // A path node tests the center of a tile. The Bot's actual eyes may be
+      // outside that reach or sight line even when A* accepts its current tile.
+      goal.unusableFeet = bot.entity.position.floored()
       if (!await work.walk(goal, 4200) || !work.ready()) return false
       target = goal.hitFrom(bot)
     }

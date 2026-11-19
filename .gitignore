@@ -9,6 +9,8 @@ node_modules/
 *.zip
 eula.txt
 last-state.json
+supply-base-state.json
+supply-base-state.json.tmp
 server.properties
 server/
 server261*/
