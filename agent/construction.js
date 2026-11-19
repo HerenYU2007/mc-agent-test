@@ -1,6 +1,7 @@
 const { Movements } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const { STONE_DROPS, LOG_NAMES, IRON_FUEL_NAMES } = require('./config')
+const { starterHutMaterials } = require('./starter-hut-materials')
 
 function createConstruction(runtimeState, features) {
   const stationBlockedSteps = new Map()
@@ -19,7 +20,7 @@ function createConstruction(runtimeState, features) {
 
   async function supplyStationMaterials(connection, materials, ready) {
     for (const [block, count] of Object.entries(materials)) {
-      if (['planks', 'chest', 'furnace', 'torch'].includes(block) || features.inventoryItemCount(block) >= count) continue
+      if (!count || ['planks', 'chest', 'furnace', 'torch', 'crafting_table'].includes(block) || features.inventoryItemCount(block) >= count) continue
       const logName = block.replace(/_planks$/, '_log')
       if (block.endsWith('_planks') && LOG_NAMES.has(logName)) {
         const logCount = Math.ceil((count - features.inventoryItemCount(block)) / 4)
@@ -39,13 +40,14 @@ function createConstruction(runtimeState, features) {
     const chestNeeded = materials.chest && !features.inventoryItemCount('chest')
     const furnaceNeeded = materials.furnace && !features.inventoryItemCount('furnace')
     const torchNeeded = materials.torch && !features.inventoryItemCount('torch')
+    const tableNeeded = materials.crafting_table && !features.inventoryItemCount('crafting_table')
     if (furnaceNeeded && features.inventoryCount(STONE_DROPS) < 8) {
       await gatherStationStone(8, ready)
       return false
     }
 
     const planks = (materials.planks ?? 0) + (chestNeeded ? 8 : 0) +
-      (chestNeeded || furnaceNeeded ? 4 : 0) + (torchNeeded ? 3 : 0)
+      (chestNeeded || furnaceNeeded || tableNeeded ? 4 : 0) + (torchNeeded ? 3 : 0)
     if (features.plankCount() + features.inventoryCount(LOG_NAMES) * 4 < planks) {
       await features.collectWoodWithPlan(null, Math.ceil((planks - features.plankCount()) / 4))
       return false
@@ -75,6 +77,7 @@ function createConstruction(runtimeState, features) {
       if (!features.inventoryItemCount('stick') && !await features.craftNamed('stick')) return false
       if (!await features.craftNamed('torch')) return false
     }
+    if (tableNeeded && !features.inventoryItemCount('crafting_table') && !await features.craftNamed('crafting_table')) return false
     return connection === runtimeState.bot && ready() && Object.entries(materials).every(([block, count]) =>
       (block === 'planks' ? features.plankCount() : features.inventoryItemCount(block)) >= count)
   }
@@ -84,7 +87,7 @@ function createConstruction(runtimeState, features) {
     const ready = () => features.canWorkHere(connection) && !features.foodRecoveryNeeded(connection) &&
       !features.closeCombatPlan() && !features.damageInterruptActive(connection) && Date.now() >= runtimeState.retreatUntil
     if (!ready()) return
-    runtimeState.lastDecision = runtimeState.supplyStation.schematic ? 'build-structure' : 'build-camp'
+    runtimeState.lastDecision = runtimeState.supplyStation.schematic || runtimeState.supplyStation.hut ? 'build-structure' : 'build-camp'
     const constructionMovement = new Movements(connection)
     constructionMovement.canDig = false
     constructionMovement.scafoldingBlocks = []
@@ -141,7 +144,13 @@ function createConstruction(runtimeState, features) {
     connection.once('end', disconnected)
     try {
       await Promise.race([connectionEnded, runtimeState.supplyStation.step(connection, { ready, walk, log: features.log, explore: features.exploreOneStep,
-        materials: materials => supplyStationMaterials(connection, materials, ready), dig: features.digWithExposure })])
+        materials: async (materials, hutSite) => {
+          const remaining = hutSite ? await starterHutMaterials(connection, materials, {
+            ready, walk, log: features.log, explore: features.exploreOneStep,
+            protected: position => runtimeState.supplyStation.protects(connection, position),
+          }, features) : materials
+          return remaining ? supplyStationMaterials(connection, remaining, ready) : false
+        }, dig: features.digWithExposure })])
     } catch (error) {
       features.log('supply station step interrupted', { ...runtimeState.supplyStation.status(), message: error.message })
     } finally {

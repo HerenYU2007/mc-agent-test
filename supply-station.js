@@ -3,6 +3,7 @@ const path = require('node:path')
 const { Vec3 } = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
 const { readStructureNbt } = require('./structure-nbt')
+const { HUT_ID, HUT_SIZE, hutBlueprint, hutItem, hutBlockMatches } = require('./starter-hut')
 
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const CLEARABLE = new Set(['short_grass', 'tall_grass', 'fern', 'large_fern', 'bush', 'dead_bush', 'snow'])
@@ -14,13 +15,14 @@ const STATION_SIZE = [5, 4, 5]
 
 class StationPlacementGoal extends goals.GoalPlaceBlock {
   constructor(bot, cell) {
-    super(cell.position, bot.world, { range: 4.25, ...(cell.baseOnly ? { faces: [UP.scaled(-1)] } : {}) })
+    super(cell.position, bot.world, { range: 4.25, half: cell.half,
+      faces: cell.faces ?? (cell.baseOnly ? [UP.scaled(-1)] : undefined) })
     this.facesPos = this.facesPos.flatMap(([face, point, reference]) => {
       const center = [face, point, reference]
       if (!solidGround(bot.blockAt(reference))) return [center]
       const across = face.x ? new Vec3(0, 0.3, 0) : new Vec3(0.3, 0, 0)
       const along = face.z ? new Vec3(0, 0.3, 0) : new Vec3(0, 0, 0.3)
-      return [center, ...[across, across.scaled(-1), along, along.scaled(-1)]
+      return [center, ...[across, across.scaled(-1), ...(cell.half ? [] : [along, along.scaled(-1)])]
         .map(offset => [face, point.plus(offset), reference])]
     })
   }
@@ -134,11 +136,14 @@ function vector({ x, y, z }) {
 }
 
 class SupplyStation {
-  constructor(stateFile, requested, schematicFile) {
+  constructor(stateFile, requested, schematicFile, hut = false) {
     this.stateFile = stateFile
+    if (hut && schematicFile) throw new Error('生存小屋与外部 NBT 蓝图需分别启动')
+    this.hut = hut
     this.schematic = schematicFile ? readStructureNbt(schematicFile) : null
-    this.size = this.schematic?.size ?? STATION_SIZE
-    this.requested = requested || Boolean(this.schematic)
+    this.blueprintId = hut ? HUT_ID : this.schematic?.id ?? null
+    this.size = hut ? HUT_SIZE : this.schematic?.size ?? STATION_SIZE
+    this.requested = requested || hut || Boolean(this.schematic)
     this.phase = '待选址'
     this.completed = false
     this.worked = 0
@@ -147,12 +152,13 @@ class SupplyStation {
     if (stateFile && fs.existsSync(stateFile)) {
       const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
       if (data.version !== 1) throw new Error('Unsupported supply station state version')
-      if ((data.schematicId ?? null) !== (this.schematic?.id ?? null)) throw new Error('蓝图已变更，请使用该图纸专用的进度文件')
+      if ((data.schematicId ?? null) !== this.blueprintId) throw new Error('蓝图已变更，请使用该图纸专用的进度文件')
       this.site = { ...data.site, center: vector(data.site.center), front: vector(data.site.front), entry: vector(data.site.entry) }
       this.cells = this.cellsForSite()
       this.worked = data.worked
       this.completed = data.completed
       this.roofStep = Boolean(data.roofStep)
+      this.spawnSet = Boolean(data.spawnSet)
       this.phase = this.completed ? '已建成' : '待复工'
       this.requested = true
       this.resumePending = !this.completed
@@ -174,10 +180,12 @@ class SupplyStation {
     if (!this.requested) return null
     return { phase: this.phase, placed: this.worked, total: this.cells.length,
       center: this.site?.center ?? null, completed: this.completed,
-      ...(this.schematic ? { schematic: this.schematic.name, size: this.size } : {}) }
+      ...(this.hut ? { schematic: '5×5 生存小屋', size: this.size, spawnSet: Boolean(this.spawnSet) } :
+        this.schematic ? { schematic: this.schematic.name, size: this.size } : {}) }
   }
 
   cellsForSite() {
+    if (this.hut) return hutBlueprint(this.site)
     if (!this.schematic) return blueprint(this.site)
     const { center, supports } = this.site
     const origin = center.offset(-Math.floor(this.size[0] / 2), 0, -Math.floor(this.size[2] / 2))
@@ -191,7 +199,7 @@ class SupplyStation {
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true })
     const temp = this.stateFile + '.tmp'
     fs.writeFileSync(temp, JSON.stringify({ version: 1, site: this.site, worked: this.worked,
-      completed: this.completed, roofStep: this.roofStep, schematicId: this.schematic?.id }) + '\n')
+      completed: this.completed, roofStep: this.roofStep, schematicId: this.blueprintId, spawnSet: this.spawnSet }) + '\n')
     fs.renameSync(temp, this.stateFile)
   }
 
@@ -217,9 +225,13 @@ class SupplyStation {
   }
 
   scan(bot) {
-    const missing = this.cells.filter(cell => !matches(bot.blockAt(cell.position)?.name, cell.block))
+    const missing = this.cells.filter(cell => !this.cellMatches(bot, cell))
     this.worked = this.cells.length - missing.length
     return missing
+  }
+
+  cellMatches(bot, cell) {
+    return this.hut ? hutBlockMatches(bot, cell) : matches(bot.blockAt(cell.position)?.name, cell.block)
   }
 
   async step(bot, work) {
@@ -238,7 +250,10 @@ class SupplyStation {
     }
     if (!missing.length) {
       this.phase = '验收'
-      if (!this.schematic) {
+      if (this.hut) {
+        if (this.roofStep && !await this.removeHutPlatform(bot, work)) return
+        if (!this.spawnSet && !await this.setHutSpawn(bot, work)) return
+      } else if (!this.schematic) {
         if (this.roofStep && !await this.removeRoofStep(bot, work)) return
         if (!await work.walk(new goals.GoalBlock(entry.x, entry.y, entry.z), 6000) || !work.ready()) return
         const inside = new goals.GoalBlock(center.x, center.y + 1, center.z)
@@ -260,11 +275,14 @@ class SupplyStation {
       Math.max(Math.abs(cell.position.x - center.x), Math.abs(cell.position.z - center.z)) === 2
     const roofCorner = cell => Math.abs(cell.position.x - center.x) === 2 && Math.abs(cell.position.z - center.z) === 2
     const roofStepNeeded = () => AIR.has(bot.blockAt(center.offset(0, 3, 0))?.name)
-    if (missing.some(outerRoof) && roofStepNeeded() && !matches(bot.blockAt(center.plus(UP))?.name, PLANK)) {
-      materials.planks += 1
+    if (this.hut && missing.some(cell => cell.phase === '屋顶')) {
+      const needed = this.hutPlatform().filter(position => !matches(bot.blockAt(position)?.name, PLANK)).length
+      materials.planks = (materials.planks ?? 0) + needed
+    } else if (missing.some(outerRoof) && roofStepNeeded() && !matches(bot.blockAt(center.plus(UP))?.name, PLANK)) {
+      materials.planks = (materials.planks ?? 0) + 1
     }
     this.phase = '备料'
-    if (!await work.materials(materials) || !work.ready()) return
+    if (!await work.materials(materials, this.hut ? this.site : null) || !work.ready()) return
     if (bot.entity.position.distanceTo(center) > 9) {
       this.phase = '返回工地'
       if (!await work.walk(new goals.GoalNear(entry.x, entry.y, entry.z, 1), 16000) || !work.ready()) return
@@ -276,7 +294,11 @@ class SupplyStation {
       const phase = outstanding[0].phase
       this.phase = phase
       let candidates = outstanding.filter(cell => cell.phase === phase)
-      if (phase === '屋顶') {
+      if (this.hut) {
+        if ((phase === '墙体第 3 层' || phase === '屋顶') && !await this.climbHutPlatform(bot, work)) return
+        if (phase === '屋顶中格' && this.roofStep && !await this.removeHutPlatform(bot, work)) return
+        if (phase === '门' && !this.spawnSet && !await this.setHutSpawn(bot, work)) return
+      } else if (phase === '屋顶') {
         const rim = candidates.filter(outerRoof)
         if (rim.length && roofStepNeeded()) {
           if (!await this.climbRoofStep(bot, work)) return
@@ -309,6 +331,62 @@ class SupplyStation {
         this.failedCells.set(cell.position.toString(), Date.now() + 7000)
       }
       if (!progress) return
+    }
+  }
+
+  hutPlatform() {
+    const { center, front } = this.site
+    return [center.plus(front), center, center.plus(UP)]
+  }
+
+  async climbHutPlatform(bot, work) {
+    if (!this.roofStep) {
+      this.roofStep = true
+      this.save()
+    }
+    for (const position of this.hutPlatform()) {
+      if (!matches(bot.blockAt(position)?.name, PLANK) && !await this.place(bot, work, { position, block: PLANK, baseOnly: true })) return false
+    }
+    const { x, y, z } = this.site.center.offset(0, 2, 0)
+    if (bot.entity.position.floored().equals(new Vec3(x, y, z))) return true
+    return work.walk(new goals.GoalBlock(x, y, z), 6500)
+  }
+
+  async removeHutPlatform(bot, work) {
+    const { x, y, z } = this.site.entry
+    if (!await work.walk(new goals.GoalBlock(x, y, z), 6500) || !work.ready()) return false
+    for (const position of this.hutPlatform().reverse()) {
+      const block = bot.blockAt(position)
+      if (matches(block?.name, PLANK) && (!bot.canDigBlock(block) || !bot.canSeeBlock(block) || !await work.dig(block))) return false
+    }
+    this.roofStep = false
+    this.save()
+    return true
+  }
+
+  async setHutSpawn(bot, work) {
+    const position = this.cells.find(cell => cell.block === 'bed').pair
+    const bed = bot.blockAt(position)
+    if (!bed?.name.endsWith('_bed')) return false
+    const { x, y, z } = this.site.center
+    if (!await work.walk(new goals.GoalBlock(x, y, z), 6000) || !work.ready()) return false
+    let confirmed = false
+    const message = packet => {
+      if (JSON.stringify(packet?.json ?? packet).includes('block.minecraft.set_spawn') ||
+          /respawn point set|已设置重生点/i.test(packet?.toString() ?? '')) confirmed = true
+    }
+    bot.on('message', message)
+    try {
+      await bot.activateBlock(bed)
+      for (let tick = 0; tick < 16 && !confirmed && !bot.isSleeping && work.ready(); tick++) await bot.waitForTicks(1)
+      if (!confirmed && !bot.isSleeping) return false
+      this.spawnSet = true
+      this.save()
+      work.log('starter hut respawn confirmed', { position })
+      if (bot.isSleeping) await bot.wake()
+      return true
+    } finally {
+      bot.removeListener('message', message)
     }
   }
 
@@ -378,25 +456,36 @@ class SupplyStation {
       if (!bot.canDigBlock(current)) return false
       await bot.dig(current, true)
     }
-    const item = bot.inventory.items().find(item => matches(item.name, block))
+    if (cell.pair && CLEARABLE.has(bot.blockAt(cell.pair)?.name)) {
+      const pairedPlant = bot.blockAt(cell.pair)
+      if (!bot.canDigBlock(pairedPlant) || !bot.canSeeBlock(pairedPlant)) return false
+      await bot.dig(pairedPlant, true)
+    }
+    const item = bot.inventory.items().find(item => this.hut ? hutItem(item.name, block) : matches(item.name, block))
     const support = bot.blockAt(target.ref)
     if (!item || !support || !work.ready() || !AIR.has(bot.blockAt(position)?.name)) return false
     await bot.equip(item, 'hand')
-    if (!work.ready() || !AIR.has(bot.blockAt(position)?.name)) return false
+    if (!work.ready() || !AIR.has(bot.blockAt(position)?.name) || (cell.pair && !AIR.has(bot.blockAt(cell.pair)?.name))) return false
     const sneak = INTERACTIVE_SUPPORT.has(support.name)
     try {
       if (sneak) bot.setControlState('sneak', true)
+      if (cell.look) {
+        await bot.lookAt(bot.entity.position.offset(cell.look.x * 4, bot.entity.eyeHeight ?? 1.62, cell.look.z * 4), true)
+        await bot.waitForTicks(1)
+      }
+      if (!work.ready()) return false
       await bot._placeBlockWithOptions(support, target.face.scaled(-1), {
-        delta: target.to.minus(target.ref), forceLook: true, swingArm: 'right',
+        delta: target.to.minus(target.ref), forceLook: cell.look ? 'ignore' : true, swingArm: 'right',
       })
     } catch (error) {
-      if (!matches(bot.blockAt(position)?.name, block)) {
+      if (!this.cellMatches(bot, cell)) {
         work.log('supply station placement retry', { position, block, message: error.message })
       }
     } finally {
       if (sneak) bot.setControlState('sneak', false)
     }
-    return work.ready() && matches(bot.blockAt(position)?.name, block)
+    if (cell.pair && work.ready()) await bot.waitForTicks(2)
+    return work.ready() && this.cellMatches(bot, cell)
   }
 
   async verifyFixtures(bot, work) {
