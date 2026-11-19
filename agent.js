@@ -557,13 +557,13 @@ function miningUnderground() {
     bot.inventory.items().some(item => item.name.endsWith('_pickaxe'))
 }
 
-function nightShelterTerrain() {
-  if (!bot?.entity || bot.game?.dimension !== 'overworld') return 'unknown'
-  const top = bot.game.minY + bot.game.height
+function nightShelterTerrain(connection = bot, feet = connection?.entity?.position.floored()) {
+  if (!feet || connection.game?.dimension !== 'overworld') return 'unknown'
+  const top = connection.game.minY + connection.game.height
   if (!Number.isInteger(top)) return 'unknown'
-  const head = bot.entity.position.floored().offset(0, 1, 0)
+  const head = feet.offset(0, 1, 0)
   for (let y = head.y; y < top; y += 1) {
-    const block = bot.blockAt(head.offset(0, y - head.y, 0), false)
+    const block = connection.blockAt(head.offset(0, y - head.y, 0), false)
     if (!block) return 'unknown'
     if (block.boundingBox === 'block' && !/(leaves|_log|_wood)$/.test(block.name)) return 'covered'
   }
@@ -615,14 +615,19 @@ function damageInterruptActive(connection) {
 }
 
 async function recoverFoodSupply() {
+  const connection = bot
   lastDecision = 'hunt-food'
-  log('food recovery priority', { food: bot.food, target: committedMineTarget?.position ?? null })
-  if (!await huntNearbyAnimalsOrForage() && foodRecoveryNeeded() && canWorkHere(bot) && !closeCombatPlan()) {
-    // Search for new animals from the nearest accessible ground.
-    await exploreOneStep()
+  log('food recovery priority', { food: connection.food, target: committedMineTarget?.position ?? null })
+  if (!await huntNearbyAnimalsOrForage() && foodRecoveryNeeded(connection) &&
+      canWorkHere(connection) && !closeCombatPlan()) {
+    if (nightShelterTerrain() === 'covered') {
+      await approachFoodSurface(connection)
+    } else {
+      await exploreOneStep()
+    }
   }
-  if (!foodRecoveryNeeded()) {
-    log('food recovery complete', { food: bot?.food, target: committedMineTarget?.position ?? null })
+  if (canWorkHere(connection) && !foodRecoveryNeeded(connection)) {
+    log('food recovery complete', { food: connection.food, target: committedMineTarget?.position ?? null })
   }
 }
 
@@ -2586,11 +2591,45 @@ async function forageVillageBread() {
 
 function openSurfaceAt(connection, feet) {
   const at = connection.blockAt(feet.offset(0, 1, 0))
-  return connection.game?.dimension === 'overworld' && Number(at?.skyLight) >= 13 && walkableAt(feet.x, feet.y, feet.z)
+  return Number(at?.skyLight) >= 13 && walkableAt(feet.x, feet.y, feet.z) &&
+    nightShelterTerrain(connection, feet) === 'open'
 }
 
 function foodReserve() {
   return getEdibleFoods().reduce((count, item) => count + (item.name === 'rotten_flesh' ? 0 : item.count), 0)
+}
+
+async function approachFoodSurface(connection) {
+  if (!canWorkHere(connection) || closeCombatPlan() || connection.game?.dimension !== 'overworld') return
+  const feet = connection.entity.position.floored()
+  if (openSurfaceAt(connection, feet)) return
+
+  lastDecision = 'surface-resupply'
+  const known = lastDrySurface?.dimension === connection.game.dimension && lastDrySurface.feet.distanceTo(feet) <= 82
+    ? lastDrySurface.feet : null
+  log('food surface route started', { from: feet, knownSurface: known })
+  surfaceRouteActive = true
+  try {
+    if (known) {
+      await gotoWithTimeout(new goals.GoalBlock(known.x, known.y, known.z), 'resupply known surface', 15000).catch(() => {})
+    }
+    for (const rise of [8, 4, 2]) {
+      if (!canWorkHere(connection) || closeCombatPlan()) return
+      const currentFeet = connection.entity.position.floored()
+      if (openSurfaceAt(connection, currentFeet)) break
+      const maxY = connection.game.minY + connection.game.height - 2
+      const goalY = Math.min(currentFeet.y + rise, maxY)
+      if (goalY <= currentFeet.y) break
+      const reached = await gotoWithTimeout(new goals.GoalY(goalY), 'resupply climb towards open sky', 14000)
+        .then(() => true, () => false)
+      if (reached || !canWorkHere(connection) || connection.entity.position.floored().y > currentFeet.y) break
+    }
+    if (canWorkHere(connection) && openSurfaceAt(connection, connection.entity.position.floored())) {
+      log('food surface reached', { position: connection.entity.position.floored() })
+    }
+  } finally {
+    surfaceRouteActive = false
+  }
 }
 
 async function surfaceResupply() {
@@ -2599,21 +2638,7 @@ async function surfaceResupply() {
   if (!canWorkHere(connection) || closeCombatPlan()) return
   const feet = connection.entity.position.floored()
   if (!openSurfaceAt(connection, feet)) {
-    lastDecision = 'surface-resupply'
-    const known = lastDrySurface?.dimension === connection.game.dimension && lastDrySurface.feet.distanceTo(feet) <= 82
-      ? lastDrySurface.feet : null
-    surfaceRouteActive = true
-    try {
-      if (known) {
-        await gotoWithTimeout(new goals.GoalNear(known.x, known.y, known.z, 2), 'resupply known surface', 15000).catch(() => {})
-        if (canWorkHere(connection) && openSurfaceAt(connection, connection.entity.position.floored())) return
-      }
-      if (!canWorkHere(connection) || closeCombatPlan()) return
-      const y = connection.entity.position.floored().y + 8
-      await gotoWithTimeout(new goals.GoalY(y), 'resupply climb towards open sky', 14000).catch(() => {})
-    } finally {
-      surfaceRouteActive = false
-    }
+    await approachFoodSurface(connection)
     return
   }
   lastDecision = 'hunt-food'
@@ -2680,13 +2705,6 @@ async function huntNearbyAnimalsOrForage({ stockUp = false } = {}) {
 
     await eatFoodIfNeeded()
     return true
-  }
-
-  if (bot.entity.position.y < 55 && recoveringFood) {
-    log('starving underground; navigating towards surface for food')
-    const startY = bot.entity.position.y
-    await gotoWithTimeout(new goals.GoalY(68), 'surface for food', 12000).catch(() => {})
-    return bot.entity.position.y > startY + 2
   }
 
   return false

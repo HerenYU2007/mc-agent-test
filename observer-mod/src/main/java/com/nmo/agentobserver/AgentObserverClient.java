@@ -72,6 +72,7 @@ public final class AgentObserverClient implements ClientModInitializer {
             case "night-shelter" -> "夜间避难";
             case "death-recovery" -> "回收死亡掉落物";
             case "hunt-food", "hunt_food" -> "寻找食物";
+            case "surface-resupply" -> "返回地面补给";
             case "collect-wood", "collect_wood" -> "采木";
             case "gear-up", "gear_up" -> "合成装备";
             case "emergency-shelter" -> "紧急避难";
