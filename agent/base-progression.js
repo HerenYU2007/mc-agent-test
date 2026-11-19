@@ -1,12 +1,14 @@
 const path = require('node:path')
+const { Movements } = require('mineflayer-pathfinder')
 const { createSupplyBase } = require('../supply-base')
+const { createVillageExpedition } = require('./expedition')
 const { PROJECT_ROOT, HOST, PORT, USERNAME, LOG_NAMES, IRON_FUEL_NAMES } = require('./config')
 
 const POST_ARMOR_DIAMONDS = 10
 
 function createBaseProgression(runtimeState, features) {
   function initializeSupplyBase() {
-    runtimeState.supplyBase = createSupplyBase({
+    const api = {
       statePath: process.env.MC_BASE_STATE_PATH || path.join(PROJECT_ROOT, 'supply-base-state.json'),
       world: JSON.stringify([HOST, PORT, USERNAME]),
       diamondTarget: POST_ARMOR_DIAMONDS,
@@ -46,7 +48,49 @@ function createBaseProgression(runtimeState, features) {
         }
         await features.mineForGear(null, objective.kind, null, { objective })
       },
+    }
+    api.expedition = createVillageExpedition({
+      ...api,
+      statePath: process.env.MC_EXPEDITION_STATE_PATH || `${api.statePath}.expedition.jsonl`,
+      acquireBed: async () => {
+        if (await features.acquireShelterBed()) return true
+        if (api.safe(runtimeState.bot)) await features.exploreOneStep()
+        return false
+      },
+      regear: async () => {
+        await features.craftAvailableGear()
+        await features.autoEquipArmor()
+      },
+      selectScout: async (connection, candidates, village) => {
+        if (!runtimeState.modelEnabled || !api.safe(connection)) return null
+        const snapshot = features.snapshot()
+        const decision = await features.askDeepSeek({
+          cycle: runtimeState.cycle, position: snapshot.position, health: connection.health, food: connection.food,
+          nearbyEntities: snapshot.nearbyEntities, stage: 'village_expedition',
+          stageHint: village
+            ? '发现村庄迹象。用 explore 从 scoutCandidates 中选一个 X/Z 坐标，优先靠近 villageObservation，再记录路线。'
+            : '现在已完成基地和装备整备。用 explore 从 scoutCandidates 中选择一个 X/Z 坐标，寻找村庄，避开水域和障碍。',
+          villageObservation: village && { x: village.x, z: village.z },
+          scoutCandidates: candidates.map(({ x, z }) => ({ x, z })),
+        }, 'expedition-scout')
+        if (decision?.action !== 'explore' || !decision.target) return null
+        const selected = candidates.find(candidate => candidate.x === decision.target.x && candidate.z === decision.target.z)
+        if (selected) features.log('expedition model direction accepted', { position: selected, reason: decision.reason })
+        return selected ?? null
+      },
+      travel: async (connection, goal, label, timeout) => {
+        const walking = new Movements(connection)
+        walking.canDig = false
+        walking.allow1by1towers = false
+        walking.allowParkour = false
+        walking.maxDropDown = 2
+        walking.scafoldingBlocks = []
+        connection.pathfinder.setMovements(walking)
+        try { await api.goto(goal, label, timeout) }
+        finally { if (connection === runtimeState.bot) connection.pathfinder.setMovements(runtimeState.movements) }
+      },
     })
+    runtimeState.supplyBase = createSupplyBase(api)
   }
 
   function needsPostArmorDiamonds(connection) {

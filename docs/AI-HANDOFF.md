@@ -16,6 +16,7 @@
 | 战斗、撤退、盾牌与来箭格挡 | [`combat.js`](../agent/combat.js)、[`combat-defence.js`](../agent/combat-defence.js) |
 | 食物、夜间避难和死亡掉落 | [`food.js`](../agent/food.js)、[`shelter.js`](../agent/shelter.js)、[`death-recovery.js`](../agent/death-recovery.js) |
 | 5×5 施工、NBT 导入、基地与红石工坊 | [`construction.js`](../agent/construction.js)、[`supply-station.js`](../supply-station.js)、[`structure-nbt.js`](../structure-nbt.js)、[`supply-base.js`](../supply-base.js) |
+| 补给后整备、建临时基地、找村庄和返程 | [`expedition.js`](../agent/expedition.js)、[`expedition-shelter.js`](../agent/expedition-shelter.js) |
 | 创造模式 `.litematic` 逐块施工 | [`creative-build.js`](../agent/creative-build.js)、[`litematic.js`](../litematic.js)、[`build-creative.js`](../scripts/build-creative.js)、[实测步骤](CREATIVE-BUILD.md) |
 | 网页面板、HTTP 接口、观测数据 | [`dashboard.html`](../agent/dashboard.html)、[`dashboard.js`](../agent/dashboard.js)、[`telemetry.js`](../agent/telemetry.js) |
 | 原生 HUD、线路、目标和背包 | [`ObserverHud.java`](../observer-mod/src/main/java/com/nmo/agentobserver/ObserverHud.java)、[`ObserverFrame.java`](../observer-mod/src/main/java/com/nmo/agentobserver/ObserverFrame.java)、[`AgentObserverClient.java`](../observer-mod/src/main/java/com/nmo/agentobserver/AgentObserverClient.java) |
@@ -52,6 +53,14 @@
 补给站是一次性任务。设置 `MC_BUILD_SUPPLY_STATION=1` 可在启动时直接开始，也可由模型选择 `build_camp` 触发。计划由 `supply-station.js` 维护。若要在进程重启后续建，把 `MC_SUPPLY_STATION_STATE` 指向该世界独用的 JSON 路径。重启时复用这个路径，新世界使用新路径。`/state` 的 `supplyStation` 显示阶段、工地中心、已确认和计划方块数。
 
 地基、地板、双层墙、室内设施和屋顶按顺序施工，入口留出两格高空间。补给站备料调用现有的采木、采石、合成和熔炉流程。施工寻路不挖方块，核对实际方块后才更新进度。恢复施工要看 `supply station paused`、`supply station resumed`，以及复工前后是否是同一工地。`supply station completed` 的前置条件是整份蓝图一致、能走进入口，并成功打开箱子和熔炉。
+
+### 村庄探险与临时基地
+
+补给站和红石工坊完成整备后，Bot 在附近选择可用地形，搭建带门、完整屋顶、室内和四周火把的 4×4 临时基地。它从库存取得床或用三块同色羊毛合成床，进门后放床并与床交互，等待服务器确认个人重生点。出发前核对血量、饱食、8 份食物、16 根火把、四件护甲、盾和镐剑状态。未到出发条件时继续在补给站整备或在房内等待白天。
+
+探险中根据已载入的村民、钟、农田、干草捆、床和工作站的组合识别村庄。远处发现迹象时，先规划接近路线，到村庄地标的水平距离不超过 12 格时才确认找到。启用 DeepSeek 后，由它从本地候选坐标里决定初始探索或接近方向，并在后续每三个探路段重新选一次，决策和用量会显示在网页及旁观 HUD。没有有效模型结果时采用本地候选排序。沿途记录实际经过的坐标。血量降至 12、饱食降至 10、食物少于三份、火把不超过三根、装备磨损或天黑时，会切换到回程。回程按路点倒序寻路，遭遇即时危险时仍由战斗或撤离逻辑处理。找到村庄后也返回补给站并保存地标与路线。
+
+查看 `/state` 的 `supplyBase.expedition`，其中有出发阶段、临时基地、已确认重生点、村庄、地标、当前路线和上次完整返程路线。独立测试世界设置单独的 `MC_BASE_STATE_PATH`、`MC_EXPEDITION_STATE_PATH`。运行 `node scripts/test-expedition.js` 验证几何布局、整备门槛、低血回撤、状态恢复和村庄识别。
 
 ### 原版结构 `.nbt`
 

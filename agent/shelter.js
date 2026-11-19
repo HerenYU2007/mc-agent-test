@@ -14,10 +14,15 @@ function createShelter(runtimeState, features) {
   // not available this early, so the bot must kill three sheep (or pick up wool).
   async function tryBed() {
     if (runtimeState.bot.inventory.items().some(item => item.name.endsWith('_bed'))) return true
-    const wool = () => runtimeState.bot.inventory.items().filter(item => WOOL_NAMES.test(item.name))
-      .reduce((sum, item) => sum + item.count, 0)
+    const woolColour = () => {
+      const counts = new Map()
+      for (const item of runtimeState.bot.inventory.items().filter(item => WOOL_NAMES.test(item.name))) {
+        counts.set(item.name, (counts.get(item.name) || 0) + item.count)
+      }
+      return [...counts].find(([, amount]) => amount >= 3)?.[0]?.replace(/_wool$/, '')
+    }
     // Hunt sheep that are close enough to reach before dark.
-    for (let attempt = 0; attempt < 6 && wool() < 3 && features.canWorkHere(runtimeState.bot); attempt += 1) {
+    for (let attempt = 0; attempt < 6 && !woolColour() && features.canWorkHere(runtimeState.bot) && !features.closeCombatPlan(); attempt += 1) {
       const sheep = Object.values(runtimeState.bot.entities).find(entity =>
         features.entityNameOf(entity) === 'sheep' && entity.position.distanceTo(runtimeState.bot.entity.position) < 30)
       if (!sheep) break
@@ -35,14 +40,14 @@ function createShelter(runtimeState, features) {
         features.log('sheep hunt interrupted', { message: error.message })
       }
     }
-    if (wool() < 3) return false
-    const woolItem = runtimeState.bot.inventory.items().find(item => WOOL_NAMES.test(item.name))
-    const colour = woolItem.name.replace(/_wool$/, '')
-    if (!await features.makePlanksFor(3)) return false
+    const colour = woolColour()
+    if (!colour) return false
     const table = await features.ensureCraftingTable()
-    const crafted = Boolean(table && await features.craftNamed(`${colour}_bed`, table))
-    await features.reclaimTemporaryCraftingTable()
-    return crafted
+    try {
+      return Boolean(table && await features.makePlanksFor(3) && await features.craftNamed(`${colour}_bed`, table))
+    } finally {
+      await features.reclaimTemporaryCraftingTable()
+    }
   }
 
   // Place the bed on a flat spot and sleep. Returns true once the bot slept or
@@ -346,6 +351,7 @@ function createShelter(runtimeState, features) {
   }
 
   return {
+    acquireShelterBed: tryBed,
     tryEmergencyPit,
     firstNightShelter,
     breakShelter,

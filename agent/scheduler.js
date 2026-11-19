@@ -42,7 +42,8 @@ function createScheduler(runtimeState, features) {
       return
     }
 
-    if (!immediate && !runtimeState.emergencyShelteredUntil && !runtimeState.shelteredUntilDawn && features.foodRecoveryNeeded()) {
+    if (!immediate && !runtimeState.emergencyShelteredUntil && !runtimeState.shelteredUntilDawn &&
+        !runtimeState.supplyBase.expeditionActive(runtimeState.bot) && features.foodRecoveryNeeded()) {
       if (runtimeState.busy || runtimeState.mineBusy || runtimeState.isEating || runtimeState.isSmelting || runtimeState.isDiggingBlock || runtimeState.shelterBusy || Date.now() < runtimeState.nextFoodSearchAt) return
       const connection = runtimeState.bot
       const resumeMining = runtimeState.mineMode
@@ -222,7 +223,8 @@ function createScheduler(runtimeState, features) {
       // and wait for daylight. Running about at night unarmed is how it kept dying.
       const duskNow = features.isNightShelterTime(state.timeOfDay)
       if (!duskNow) runtimeState.shelterAttemptedTonight = false
-      const needsShelter = duskNow && !runtimeState.shelteredUntilDawn && !runtimeState.shelterAttemptedTonight &&
+      const needsShelter = duskNow && !runtimeState.supplyBase.active(runtimeState.bot) &&
+        !runtimeState.shelteredUntilDawn && !runtimeState.shelterAttemptedTonight &&
         state.nightShelterTerrain === 'open' && (runtimeState.nightsSheltered < 1 || !state.hasSword)
       if (needsShelter && !(state.hasSword && features.findNearestHostile(8))) {
         runtimeState.supplyStation.interrupt(features.log, 'night shelter')
@@ -273,6 +275,8 @@ function createScheduler(runtimeState, features) {
       if (stage.name === 'supply_base' && !features.closeCombatPlan() && features.canWorkHere(runtimeState.bot)) {
         runtimeState.lastDecision = 'supply-base'
         await runtimeState.supplyBase.run(runtimeState.bot)
+        const expedition = runtimeState.supplyBase.status().expedition
+        if (expedition?.phase === 'searching' || expedition?.phase === 'returning') runtimeState.lastDecision = `expedition-${expedition.phase}`
         return
       }
       const upgrade = features.nextIronUpgrade()

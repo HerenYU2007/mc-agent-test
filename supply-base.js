@@ -410,6 +410,11 @@ function createSupplyBase(api) {
 
   async function run(connection) {
     if (!unlocked || !inOverworld(connection)) return
+    if (anchor && api.expedition?.active(connection, anchor)) {
+      setPhase(api.expedition.status().phase === 'returning' ? 'expedition-returning' : 'expedition-searching')
+      await api.expedition.continueTrip(connection, anchor)
+      return
+    }
     if (trip) {
       const { kind, names, target, until } = trip
       if (Date.now() < until && count(items(connection), names) < target &&
@@ -425,6 +430,20 @@ function createSupplyBase(api) {
       if (!site) return api.explore()
       saveProgress(site)
       api.log('supply base site selected', { position: site })
+    }
+
+    async function runExpedition() {
+      const currentTable = blockFor(connection, 'table')
+      const phase = await api.expedition.prepare(connection, anchor, {
+        collect: (...args) => collect(connection, ...args),
+        make: name => make(connection, name, currentTable),
+      })
+      setPhase(phase)
+    }
+
+    if (api.expedition?.inside(connection) || api.expedition?.buildingShelter()) {
+      await runExpedition()
+      return
     }
 
     if (Date.now() < visitAfter && connection.entity.position.distanceTo(anchor) < 40) {
@@ -445,7 +464,9 @@ function createSupplyBase(api) {
     status.workshop = workshopPart ? 'building' : status.workshop
     const table = blockFor(connection, 'table')
     const pending = depotPart || workshopPart
-    if (pending && !AIR.test(connection.blockAt(piecePos(pending))?.name)) {
+    const pendingBlock = pending && connection.blockAt(piecePos(pending))
+    if (pending && !pendingBlock) { setPhase('loading-site'); return }
+    if (pending && !AIR.test(pendingBlock.name)) {
       setPhase('obstructed', { part: pending.id, resource: null })
       visitAfter = Date.now() + 15000
       return
@@ -494,7 +515,6 @@ function createSupplyBase(api) {
       if (api.foodReserve() < FOOD_TARGET) return collect(connection, 'food')
       return api.forage()
     }
-    visitAfter = Date.now() + 60000
     setPhase('departing', { resource: null })
     api.log('base resupply complete', { position: anchor, food: api.foodReserve(), torches: count(items(connection), ['torch']),
       workshop: status.workshop, missingSpare: status.missingSpare })
@@ -503,6 +523,11 @@ function createSupplyBase(api) {
       visitAfter = 0
       return collect(connection, 'iron', IRON, 8)
     }
+    if (api.expedition) {
+      await runExpedition()
+      return
+    }
+    visitAfter = Date.now() + 60000
     await api.explore()
   }
 
@@ -510,6 +535,7 @@ function createSupplyBase(api) {
     if (!unlocked || !anchor || !inOverworld(connection) || status.storedFood === 0 || Date.now() < emergencyAfter ||
         connection.entity.position.distanceTo(anchor) > 30) return false
     emergencyAfter = Date.now() + 20000
+    if (api.expedition?.inside(connection) && !await api.expedition.leave(connection)) return false
     if (!await returnToBase(connection)) return false
     await serviceStorage(connection, false, true)
     if (!api.safe(connection) || !api.foodReserve()) return false
@@ -522,18 +548,19 @@ function createSupplyBase(api) {
     qualification,
     recordDiamonds,
     completeResupply,
+    expeditionActive: connection => Boolean(anchor && inOverworld(connection) && api.expedition?.active(connection, anchor)),
     resupplyStatus: () => ({ diamonds: unlocked ? 0 : qualificationDiamonds, active: qualification().needsResupply }),
     run,
     recoverFood,
     owns: (connection, position) => Boolean(anchor && inOverworld(connection) && position &&
-      PARTS.some(piece => position.equals(piecePos(piece)))),
+      (PARTS.some(piece => position.equals(piecePos(piece))) || api.expedition?.owns(position))),
     keeps: item => SPARES.some(spare => spare.name === item.name) && api.durability(item) > DURABILITY_TARGET,
     status: () => {
       const progress = qualification()
       let phase = status.phase
       if (!progress.unlocked && progress.diamonds) phase = progress.needsResupply ? 'awaiting-resupply' : 'awaiting-diamonds'
       if (progress.unlocked && phase === 'awaiting-armor') phase = 'selecting-site'
-      return { ...status, phase, position: anchor, qualification: progress }
+      return { ...status, phase, position: anchor, qualification: progress, expedition: api.expedition?.status() }
     },
   }
 }
