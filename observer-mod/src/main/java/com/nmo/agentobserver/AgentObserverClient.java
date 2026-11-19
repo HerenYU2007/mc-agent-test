@@ -80,7 +80,8 @@ public final class AgentObserverClient implements ClientModInitializer {
             case "attack", "hunt-hostile" -> "战斗";
             case "explore" -> "探索";
             case "swim-ashore" -> "游泳上岸";
-            case "build-camp", "build_camp" -> "搭建营地";
+            case "build-camp", "build_camp" -> "建造补给站";
+            case "build-structure" -> "按蓝图建造";
             case "inspect-stone", "inspect_stone" -> "查看石头";
             case "digging" -> "正在挖掘";
             case "boot", "-" -> "等待";

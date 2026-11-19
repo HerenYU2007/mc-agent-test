@@ -9,6 +9,7 @@ const toolPlugin = require('mineflayer-tool').plugin
 const pvp = require('mineflayer-pvp').plugin
 const mineflayerViewer = require('prismarine-viewer').mineflayer
 const { Vec3 } = require('vec3')
+const { SupplyStation } = require('./supply-station')
 
 const VERSION = process.env.MC_VERSION || '26.3'
 const HOST = process.env.MC_HOST || '127.0.0.1'
@@ -68,7 +69,9 @@ const FOOD_RECOVERY_END = 14
 let recoveringFood = false
 let nextFoodSearchAt = 0
 let miningPausedForFood = false
-let campBuilt = false
+const supplyStation = new SupplyStation(process.env.MC_SUPPLY_STATION_STATE,
+  process.env.MC_BUILD_SUPPLY_STATION === '1', process.env.MC_BUILD_NBT)
+const stationBlockedSteps = new Map()
 let lastDecision = 'boot'
 let cycle = 0
 let latestState = null
@@ -354,6 +357,7 @@ function startDashboard() {
         food: bot?.food ?? null,
         foodRecovery: recoveringFood,
         resupply: { diamonds: diamondsSinceArmor, active: resupplyAfterDiamonds },
+        supplyStation: supplyStation.status(),
         ...(bot?.entity ? {
           coal: inventoryItemCount('coal'),
           charcoal: inventoryItemCount('charcoal'),
@@ -1748,9 +1752,10 @@ function plankCount() {
   return bot.inventory.items().reduce((sum, item) => sum + (item.name.endsWith('_planks') ? item.count : 0), 0)
 }
 
-async function makePlanksFor(required) {
-  while (plankCount() < required) {
-    const logItem = bot.inventory.items().find(item => LOG_NAMES.has(item.name))
+async function makePlanksFor(required, exact = null) {
+  while ((exact ? inventoryItemCount(exact) : plankCount()) < required) {
+    const logItem = bot.inventory.items().find(item => LOG_NAMES.has(item.name) &&
+      (!exact || item.name.replace(/_log$/, '_planks') === exact))
     if (!logItem || !await craftNamed(logItem.name.replace(/_log$/, '_planks'))) return false
   }
   return true
@@ -2243,7 +2248,7 @@ async function finishFurnaceWork(connection, openWindow = null, mayApproach = fa
   return reclaimTemporaryFurnace()
 }
 
-async function processFurnaceBatch(inputNames, outputEvent, timeLimit, acceptsFuel = () => true) {
+async function processFurnaceBatch(inputNames, outputEvent, timeLimit, acceptsFuel = () => true, maxInput = Infinity) {
   const connection = bot
   if (!canWorkHere(connection) || isSmelting || pendingFurnaceBatch || temporaryFurnace || pendingIronWorkshop) return false
   if (!connection.inventory.items().some(item => inputNames.has(item.name)) ||
@@ -2266,9 +2271,10 @@ async function processFurnaceBatch(inputNames, outputEvent, timeLimit, acceptsFu
     if (!raw) return false
     batch = { position: block.position, dimension: connection.game.dimension, collected: 0 }
     pendingFurnaceBatch = batch
-    await window.putInput(raw.type, null, raw.count)
-    log('furnace batch started', { item: raw.name, count: raw.count, position: block.position })
-    const deadline = Date.now() + Math.min(timeLimit, raw.count * 11000 + 5000)
+    const batchSize = Math.min(raw.count, maxInput)
+    await window.putInput(raw.type, null, batchSize)
+    log('furnace batch started', { item: raw.name, count: batchSize, position: block.position })
+    const deadline = Date.now() + Math.min(timeLimit, batchSize * 11000 + 5000)
     while (Date.now() < deadline && canWorkHere(connection) && connection.currentWindow === window) {
       if (furnaceThreat()) {
         log('furnace batch interrupted by nearby threat')
@@ -3050,7 +3056,7 @@ function searchMineCandidates() {
   const candidates = []
   for (const position of positions) {
     const block = bot.blockAt(position)
-    if (!mineTargetNames.has(block?.name) || !isPlausibleMineTarget(position, block)) continue
+    if (supplyStation.protects(bot, position) || !mineTargetNames.has(block?.name) || !isPlausibleMineTarget(position, block)) continue
     let exposedFaces = 0
     for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
       if (isTransparentForMine(bot.blockAt(position.offset(dx, dy, dz)))) exposedFaces += 1
@@ -3273,7 +3279,8 @@ function finishMineObjective() {
   const raw = inventoryCount(IRON_INPUT_NAMES)
   const ingots = inventoryItemCount('iron_ingot')
   const ironPick = bot.inventory.items().some(item => /^(iron|diamond|netherite)_pickaxe$/.test(item.name))
-  const stoneReady = targets.every(name => STONE_TARGETS.has(name)) && inventoryCount(STONE_DROPS) >= STONE_TARGET
+  const stock = currentMineOrder?.stoneDrop ? inventoryItemCount(currentMineOrder.stoneDrop) : inventoryCount(STONE_DROPS)
+  const stoneReady = targets.every(name => STONE_TARGETS.has(name)) && stock >= (currentMineOrder?.stoneLimit ?? STONE_TARGET)
   const coalReady = targets.every(name => COAL_TARGETS.has(name)) &&
     (coal >= 4 || (raw > 0 && fuel > 0) || (ironPick && inventoryItemCount('torch') < 8 && coal >= 1))
   const upgrade = nextIronUpgrade()
@@ -3304,17 +3311,19 @@ function recordMineAudit(result, block = null) {
   }[result] })
 }
 
-async function mineForGear(modelTarget = null, targetName = '', requested = null) {
+async function mineForGear(modelTarget = null, targetName = '', requested = null, stoneLimit = null, stoneDrop = null) {
   if (foodRecoveryNeeded()) return false
   if (!bot.inventory.items().some(item => item.name.endsWith('_pickaxe'))) {
     log('mining refused; no pickaxe equipped or available')
     persistExperience({ cycle, action: 'mine-blocked', experience: '没有镐，禁止进入挖矿执行器' })
     return false
   }
-  const targets = mineTargetSetFromName(targetName)
+  const targets = stoneDrop ? new Set([stoneDrop === 'cobblestone' ? 'stone' : 'deepslate']) : mineTargetSetFromName(targetName)
   if (committedMineTarget && !targets.has(committedMineTarget.block.name)) committedMineTarget = null
   mineTargetNames = targets
   currentMineOrder = { cycle, requested, target: targetName || 'general', source: requested ? 'model' : 'survival' }
+  if (stoneLimit) currentMineOrder.stoneLimit = stoneLimit
+  if (stoneDrop) currentMineOrder.stoneDrop = stoneDrop
   mineMode = mineTargetNames.size > 0
   recordMineAudit(mineMode ? 'command' : 'invalid-target')
   if (!mineMode) return false
@@ -3336,22 +3345,22 @@ function pruneCollectBlacklist(now = Date.now()) {
   }
 }
 
-async function collectTreeTrunks() {
+async function collectTreeTrunks(stockTarget = WOOD_TARGET, woodNames = LOG_NAMES) {
   const connection = bot
   if (!canWorkHere(connection)) return false
   pruneCollectBlacklist()
   const pending = connection.findBlocks({
-    maxDistance: 28, count: 64, matching: scanBlockIds(LOG_NAMES)
+    maxDistance: 28, count: 64, matching: scanBlockIds(woodNames)
   }).filter(position => !collectBlacklist.has(minePositionKey(position)))
   let lastTrunk = null
   let collected = 0
   let failures = 0
   while (pending.length && collected < WOOD_TARGET && failures < 3 &&
-      canWorkHere(connection) && !closeCombatPlan() && inventoryCount(LOG_NAMES) < WOOD_TARGET) {
+      canWorkHere(connection) && !closeCombatPlan() && inventoryCount(woodNames) < stockTarget) {
     const here = connection.entity.position
     const candidates = pending.flatMap(position => {
       const block = connection.blockAt(position, false)
-      if (!block || !LOG_NAMES.has(block.name)) return []
+      if (!block || !woodNames.has(block.name)) return []
       const ready = connection.canDigBlock(block) && connection.canSeeBlock(block)
       const sameTrunk = lastTrunk && position.x === lastTrunk.x && position.z === lastTrunk.z
       return [{ block, ready, score: here.distanceTo(position) +
@@ -3370,8 +3379,8 @@ async function collectTreeTrunks() {
       }
       if (!canWorkHere(connection) || closeCombatPlan()) break
       const block = connection.blockAt(position)
-      if (!block || block.type !== selected.block.type || !LOG_NAMES.has(block.name)) continue
-      if (!await digWithExposure(block, LOG_NAMES)) throw new Error('could not dig chosen trunk')
+      if (!block || block.type !== selected.block.type || !woodNames.has(block.name)) continue
+      if (!await digWithExposure(block, woodNames)) throw new Error('could not dig chosen trunk')
       collected += 1
       failures = 0
       lastTrunk = position
@@ -3637,18 +3646,18 @@ async function prepareAxeForWoodCollection() {
 
 const woodSearchVisits = []
 
-async function collectWoodWithPlan(target = null) {
+async function collectWoodWithPlan(target = null, stockTarget = WOOD_TARGET, woodNames = LOG_NAMES) {
   if (!canWorkHere(bot)) return false
   if (await leaveSpawnCanopy()) return true
   await prepareAxeForWoodCollection()
-  if (await collectTreeTrunks()) return true
+  if (await collectTreeTrunks(stockTarget, woodNames)) return true
   if (!canWorkHere(bot) || closeCombatPlan()) return false
 
   const origin = bot.entity.position.floored()
   pruneCollectBlacklist()
   const trunks = bot.findBlocks({
     maxDistance: WOOD_SCAN_RADIUS, count: 96,
-    matching: scanBlockIds(LOG_NAMES)
+    matching: scanBlockIds(woodNames)
   }).filter(position => !collectBlacklist.has(minePositionKey(position)))
   const score = position => Math.hypot(position.x - origin.x, position.z - origin.z) +
     Math.max(0, position.y - origin.y) * 2.5
@@ -3658,7 +3667,7 @@ async function collectWoodWithPlan(target = null) {
     const wood = bot.blockAt(tree)
     log('wood source found', { block: wood?.name, position: tree, candidates: trunks.length })
     if (await moveToModelTarget(tree, 'scout to tree')) {
-      if (canWorkHere(bot) && await collectTreeTrunks()) return true
+      if (canWorkHere(bot) && await collectTreeTrunks(stockTarget, woodNames)) return true
     }
     if (!canWorkHere(bot) || closeCombatPlan()) return false
     collectBlacklist.set(minePositionKey(tree), Date.now() + 30000)
@@ -3675,7 +3684,7 @@ async function collectWoodWithPlan(target = null) {
   options.sort((a, b) => novelty(b) - novelty(a))
   log('wood search moving to new ground', { from: here, target: options[0] ?? null, scanRadius: WOOD_SCAN_RADIUS })
   await exploreOneStep(options[0] ?? null)
-  return canWorkHere(bot) && !closeCombatPlan() && await collectTreeTrunks()
+  return canWorkHere(bot) && !closeCombatPlan() && await collectTreeTrunks(stockTarget, woodNames)
 }
 
 async function collectNearbyDrops(maxDistance = 16, maxCount = 6) {
@@ -3805,25 +3814,149 @@ async function recoverDeathDrops() {
   }
 }
 
-async function buildCampMarker() {
-  if (campBuilt) return
-  const placeable = bot.inventory.items().find(item => item.name.endsWith('_log') || item.name.endsWith('_planks'))
-  if (!placeable) return
+async function gatherStationStone(count, ready, exact = null) {
+  if (!hasTool('pickaxe')) {
+    if (plankCount() + inventoryCount(LOG_NAMES) * 4 < 9) await collectWoodWithPlan(null, Math.ceil((9 - plankCount()) / 4))
+    if (ready()) await prepareStarterGear()
+  } else if (mineNeedsNewGround) {
+    mineNeedsNewGround = false
+    await exploreOneStep()
+  } else if (ready()) {
+    await mineForGear(null, 'stone', null, count, exact)
+  }
+}
 
-  await bot.equip(placeable, 'hand')
-  const base = bot.entity.position.floored()
-  const offsets = [new Vec3(1, -1, 0), new Vec3(-1, -1, 0), new Vec3(0, -1, 1), new Vec3(0, -1, -1)]
-  for (const offset of offsets) {
-    const reference = bot.blockAt(base.plus(offset))
-    if (!reference || reference.name === 'air') continue
-    try {
-      await bot.placeBlock(reference, new Vec3(0, 1, 0))
-    } catch (error) {
-      log('camp placement skipped', { message: error.message })
+async function supplyStationMaterials(connection, materials, ready) {
+  for (const [block, count] of Object.entries(materials)) {
+    if (['planks', 'chest', 'furnace', 'torch'].includes(block) || inventoryItemCount(block) >= count) continue
+    const logName = block.replace(/_planks$/, '_log')
+    if (block.endsWith('_planks') && LOG_NAMES.has(logName)) {
+      const logCount = Math.ceil((count - inventoryItemCount(block)) / 4)
+      if (inventoryItemCount(logName) < logCount) {
+        await collectWoodWithPlan(null, logCount, new Set([logName]))
+        return false
+      }
+      if (!await makePlanksFor(count, block) || !ready()) return false
+    } else if (STONE_DROPS.has(block)) {
+      await gatherStationStone(count, ready, block)
+      return false
+    } else {
+      log('structure material unavailable', { block, missing: count - inventoryItemCount(block) })
+      return false
     }
   }
-  campBuilt = true
-  log('camp marker built', { position: base })
+  const chestNeeded = materials.chest && !inventoryItemCount('chest')
+  const furnaceNeeded = materials.furnace && !inventoryItemCount('furnace')
+  const torchNeeded = materials.torch && !inventoryItemCount('torch')
+  if (furnaceNeeded && inventoryCount(STONE_DROPS) < 8) {
+    await gatherStationStone(8, ready)
+    return false
+  }
+
+  const planks = (materials.planks ?? 0) + (chestNeeded ? 8 : 0) +
+    (chestNeeded || furnaceNeeded ? 4 : 0) + (torchNeeded ? 3 : 0)
+  if (plankCount() + inventoryCount(LOG_NAMES) * 4 < planks) {
+    await collectWoodWithPlan(null, Math.ceil((planks - plankCount()) / 4))
+    return false
+  }
+  if (!await makePlanksFor(planks) || !ready()) return false
+
+  if (chestNeeded || furnaceNeeded) {
+    try {
+      const table = await ensureCraftingTable()
+      if (!table || !ready()) return false
+      if (chestNeeded && !await craftNamed('chest', table)) return false
+      if (furnaceNeeded && (!ready() || !await craftNamed('furnace', table))) return false
+    } finally {
+      await reclaimTemporaryCraftingTable()
+    }
+  }
+  if (torchNeeded && ready()) {
+    if (!inventoryCount(IRON_FUEL_NAMES)) {
+      if (!inventoryCount(LOG_NAMES)) {
+        await collectWoodWithPlan(null, 1)
+        return false
+      }
+      await processFurnaceBatch(LOG_NAMES, 'supply station charcoal ready', 16000,
+        item => item.name.endsWith('_planks'), 1)
+    }
+    if (!ready()) return false
+    if (!inventoryItemCount('stick') && !await craftNamed('stick')) return false
+    if (!await craftNamed('torch')) return false
+  }
+  return connection === bot && ready() && Object.entries(materials).every(([block, count]) =>
+    (block === 'planks' ? plankCount() : inventoryItemCount(block)) >= count)
+}
+
+async function buildSupplyStation() {
+  const connection = bot
+  const ready = () => canWorkHere(connection) && !foodRecoveryNeeded(connection) &&
+    !closeCombatPlan() && !damageInterruptActive(connection) && Date.now() >= retreatUntil
+  if (!ready()) return
+  lastDecision = supplyStation.schematic ? 'build-structure' : 'build-camp'
+  const constructionMovement = new Movements(connection)
+  constructionMovement.canDig = false
+  constructionMovement.scafoldingBlocks = []
+  constructionMovement.allow1by1towers = false
+  constructionMovement.allowParkour = false
+  constructionMovement.maxDropDown = 2
+  const now = Date.now()
+  for (const [key, until] of stationBlockedSteps) {
+    if (until <= now) stationBlockedSteps.delete(key)
+  }
+  constructionMovement.exclusionAreasStep.push(block => {
+    if (!block?.position) return 0
+    const key = `${block.position.x},${block.position.z}`
+    return isWaterBlock(block) || stationBlockedSteps.has(key) ? 100 : 0
+  })
+  const walk = async (goal, timeout) => {
+    if (!ready()) return false
+    connection.pathfinder.setMovements(constructionMovement)
+    let lastPosition = connection.entity.position.clone()
+    let lastProgress = Date.now()
+    const watch = setInterval(() => {
+      if (connection.pathfinder.goal !== goal) return
+      if (!ready()) {
+        connection.pathfinder.setGoal(null)
+        return
+      }
+      const current = connection.entity.position
+      if (lastPosition.distanceTo(current) >= 0.4) {
+        lastPosition = current.clone()
+        lastProgress = Date.now()
+        return
+      }
+      if (Date.now() - lastProgress < 2700) return
+      const feet = current.floored()
+      const next = visibleNavigationState().waypoints.map(point => new Vec3(point.x, point.y, point.z).floored())
+        .find(point => point.distanceTo(feet) <= 2 && (point.x !== feet.x || point.z !== feet.z))
+      if (!next) return
+      stationBlockedSteps.set(`${next.x},${next.z}`, Date.now() + 30000)
+      log('supply station route replanned', { from: feet, blockedStep: next })
+      connection.pathfinder.setGoal(null)
+    }, 100)
+    try {
+      await gotoWithTimeout(goal, 'supply station movement', timeout)
+      return ready()
+    } catch {
+      return false
+    } finally {
+      clearInterval(watch)
+      if (connection === bot) connection.pathfinder.setMovements(movements)
+    }
+  }
+  let disconnected
+  const connectionEnded = new Promise(resolve => { disconnected = resolve })
+  connection.once('end', disconnected)
+  try {
+    await Promise.race([connectionEnded, supplyStation.step(connection, { ready, walk, log, explore: exploreOneStep,
+      materials: materials => supplyStationMaterials(connection, materials, ready), dig: digWithExposure })])
+  } catch (error) {
+    log('supply station step interrupted', { ...supplyStation.status(), message: error.message })
+  } finally {
+    connection.removeListener('end', disconnected)
+    if (!ready() && !mineMode) supplyStation.interrupt(log, 'survival priority')
+  }
 }
 
 // Pick an explore direction that leads away from nearby water: sample a ring of
@@ -4589,6 +4722,8 @@ async function decideAndAct(trigger = 'scheduled') {
     return
   }
   const immediate = !emergencyShelteredUntil && !shelteredUntilDawn ? closeCombatPlan() : null
+  if (immediate) supplyStation.interrupt(log, 'combat')
+  else if (foodRecoveryNeeded()) supplyStation.interrupt(log, 'food')
   if (immediate?.action === 'flee' && !busy && !mineBusy && !isEating && !isSmelting && !isDiggingBlock) {
     lastCombatDecision = { action: 'flee', reason: immediate.reason, target: hostileName(immediate.target) }
     await executeFlee(immediate.target, lastCombatDecision)
@@ -4803,6 +4938,16 @@ async function decideAndAct(trigger = 'scheduled') {
     const needsShelter = duskNow && !shelteredUntilDawn && !shelterAttemptedTonight &&
       state.nightShelterTerrain === 'open' && (nightsSheltered < 1 || !state.hasSword)
     if (needsShelter && !(state.hasSword && findNearestHostile(8))) {
+      supplyStation.interrupt(log, 'night shelter')
+      if (supplyStation.pending && supplyStation.protects(bot, bot.entity.position.floored().offset(0, -1, 0))) {
+        const { entry } = supplyStation.site
+        try {
+          await gotoWithTimeout(new goals.GoalBlock(entry.x, entry.y, entry.z), 'leave construction for shelter', 6500)
+        } catch {
+          return
+        }
+        if (!bot?.entity || waterOwnsMovement() || closeCombatPlan()) return
+      }
       shelterAttemptedTonight = true
       if (await firstNightShelter()) {
         shelteredUntilDawn = true
@@ -4827,6 +4972,10 @@ async function decideAndAct(trigger = 'scheduled') {
     await clearBackpack(bot, 'routine')
     if (!bot?.entity || bot.health <= 0) return
     await autoEquipArmor()
+    if (!immediate && !closeCombatPlan() && supplyStation.pending) {
+      await buildSupplyStation()
+      return
+    }
     const stage = computeStage(state)
     state.stage = stage.name
     state.stageHint = stage.hint
@@ -5014,7 +5163,8 @@ async function decideAndAct(trigger = 'scheduled') {
       } else if (requestedAction === 'build_camp') {
         lastDecision = 'build-camp'
         log('decision', { action: lastDecision, reason: modelDecision.reason })
-        await buildCampMarker()
+        supplyStation.requested = true
+        await buildSupplyStation()
         return
       } else if (requestedAction === 'inspect_stone') {
         const stone = findNearestBlock(new Set(['stone', 'deepslate']), 24)
@@ -5204,7 +5354,8 @@ function createBotConnection() {
     mcData = minecraftData(connection.version)
     movements = new Movements(connection, mcData)
     movements.canDig = true
-    movements.exclusionAreasBreak.push(() => mineBusy || surfaceRouteActive ? 0 : 100)
+    movements.exclusionAreasBreak.push(block =>
+      supplyStation.protects(connection, block?.position) || (!mineBusy && !surfaceRouteActive) ? 100 : 0)
     movements.allow1by1towers = true
     movements.allowParkour = true
     movements.placeCost = 2.5
@@ -5242,6 +5393,11 @@ function createBotConnection() {
     if (!loopsStarted) {
       loopsStarted = true
       setInterval(() => void decideAndAct('scheduled'), NORMAL_DECISION_INTERVAL_MS)
+      setInterval(() => {
+        if (supplyStation.pending && !busy && !mineMode && !mineBusy && !waterOwnsMovement() &&
+            !shelteredUntilDawn && !emergencyShelteredUntil && !isEating && !isSmelting && !isDiggingBlock &&
+            !foodRecoveryNeeded()) void decideAndAct('station')
+      }, 1600)
       // MineProcess-style local replanning. This is deliberately independent
       // from the slower DeepSeek loop and only searches when the previous
       // plan is idle, invalid, or has just finished mining.
@@ -5270,7 +5426,7 @@ function createBotConnection() {
     miningPausedForFood = false
     swimmingMode = false
     swimShore = swimProgress = swimFailedShore = null
-    campBuilt = false
+    supplyStation.interrupt(log, 'death')
     // Record the death point before anything resets the position. Keep the
     // older point if we die again before reaching it: that stack is still there.
     const where = connection.entity?.position
@@ -5328,6 +5484,7 @@ function createBotConnection() {
   connection.on('kicked', reason => log('kicked', { reason }))
   connection.on('error', error => log('connection error', { message: error.message }))
   connection.on('end', reason => {
+    supplyStation.interrupt(log, 'disconnect')
     log('connection ended', { reason })
     if (bot === connection) {
       swimmingMode = false
@@ -5340,3 +5497,4 @@ function createBotConnection() {
 
 startDashboard()
 if (botEnabled) createBotConnection()
+

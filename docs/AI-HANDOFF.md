@@ -31,6 +31,18 @@
 
 ## 观察与排障
 
+补给站是一次性任务。设置 `MC_BUILD_SUPPLY_STATION=1` 可在启动时直接开始，也可由模型选择 `build_camp` 触发。计划由 `supply-station.js` 维护。若要在进程重启后续建，把 `MC_SUPPLY_STATION_STATE` 指向该世界独用的 JSON 路径。重启时复用这个路径，新世界使用新路径。`/state` 的 `supplyStation` 显示阶段、工地中心、已确认和计划方块数。
+
+地基、地板、双层墙、室内设施和屋顶按顺序施工，入口留出两格高空间。补给站备料调用现有的采木、采石、合成和熔炉流程。施工寻路不挖方块，核对实际方块后才更新进度。恢复施工要看 `supply station paused`、`supply station resumed`，以及复工前后是否是同一工地。`supply station completed` 的前置条件是整份蓝图一致、能走进入口，并成功打开箱子和熔炉。
+
+### 原版结构 `.nbt`
+
+设置 `MC_BUILD_NBT` 指向 Java 版结构方块导出的 `.nbt` 文件。文件本身会启用施工，尺寸顺序是 X、Y、Z，首版上限是 11×4×11。`structure-nbt.js` 读取压缩和未压缩两种文件，以 `size`、`palette` 和 `blocks` 建立相对坐标。给每个世界和图纸使用独立的进度 JSON。文件内容散列会与保存的进度核对。
+
+现有采集器会按指定树种做木板，并能获取圆石或深板岩圆石。其他普通无状态方块从背包取用，缺货时记录 `structure material unavailable`。实体、自定义方块属性和方块实体数据在导入时报告，避免施工时出现不一致。空气和结构空位留空。按高度从低到高施工，世界方块一致才写入完成状态。
+
+放置过程借鉴 Baritone 的现场差异检查和多落点视线检查。检测到屋顶角落被挡时，只临时挖除蓝图上的相邻屋顶木板，随后把它恢复。[Baritone `BuilderProcess`](https://github.com/cabaletta/baritone/blob/1.21.4/src/main/java/baritone/process/BuilderProcess.java)
+
 ```powershell
 .\scripts\Get-NmoTelemetry.ps1 -Port 3001 -Events 3 -Usage
 .\scripts\Get-NmoTelemetry.ps1 -Port 3011 -Events 3
