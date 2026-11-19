@@ -5,12 +5,14 @@ const { readLitematic } = require('../litematic')
 const { runCreativeBuild } = require('../agent/creative-build')
 
 const AUTH = 'offline'
-const USAGE = '用法：npm run build:creative -- <蓝图.litematic> <原点X> <原点Y> <原点Z>，或 npm run build:creative -- --inspect <蓝图.litematic>'
+const USAGE = '用法：npm run build:creative -- [--replace-existing] <蓝图.litematic> <原点X> <原点Y> <原点Z>，或 npm run build:creative -- --inspect <蓝图.litematic>'
 
 async function main(args) {
   if (args[0] === '--help') { console.log(USAGE); return }
+  const replaceExisting = args[0] === '--replace-existing'
+  if (replaceExisting) args = args.slice(1)
   const inspect = args[0] === '--inspect'
-  if (args.length !== (inspect ? 2 : 4)) throw new Error(USAGE)
+  if ((inspect && replaceExisting) || args.length !== (inspect ? 2 : 4)) throw new Error(USAGE)
   const filename = inspect ? args[1] : args[0]
   const blueprint = readLitematic(filename)
   const { cells, ...metadata } = blueprint
@@ -41,12 +43,12 @@ async function main(args) {
 
   try {
     await once(bot, 'spawn', { signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]) })
-    if (bot.game.dimension !== 'overworld') throw new Error('请在主世界的空地施工')
+    if (bot.game.dimension !== 'overworld') throw new Error('请在主世界施工')
     if (bot.game.gameMode !== 'creative') console.log(`等待管理员设置创造模式 /gamemode creative ${name}`)
     for (let attempt = 0; bot.game.gameMode !== 'creative' && attempt < 40; attempt++) await wait(500, undefined, { signal })
     console.log(`施工 Bot ${name}，原点 ${origin}`)
     const result = await runCreativeBuild(bot, blueprint, origin, {
-      signal,
+      replaceExisting, signal,
       onProgress: progress => console.log('BUILD_PROGRESS', JSON.stringify(progress)),
     })
     const { unresolved, ...summary } = result

@@ -95,7 +95,7 @@ async function flySegment(bot, goal, signal) {
   return false
 }
 
-async function moveForClick(bot, cell, signal, retry) {
+async function moveForInteraction(bot, cell, signal, retry, reach) {
   const center = cell.position.offset(0.5, 1.55, 0.5)
   const alternatives = retry ? [center, ...FACE_PRIORITY.filter(face => !FACES[face].y)
     .map(face => center.plus(FACES[face].scaled(2.5)).offset(0, -0.85, 0))] : [center]
@@ -111,7 +111,7 @@ async function moveForClick(bot, cell, signal, retry) {
       if (!await flySegment(bot, point, signal)) { completed = false; break }
     }
     if (!completed) continue
-    const candidate = clickPoint(bot, cell)
+    const candidate = reach()
     if (candidate) return candidate
   }
   return null
@@ -163,12 +163,12 @@ function selectCreativeItem(bot, signal) {
   }
 }
 
-async function runCreativeBuild(bot, blueprint, origin, { signal, onProgress = () => {} } = {}) {
+async function runCreativeBuild(bot, blueprint, origin, { replaceExisting = false, signal, onProgress = () => {} } = {}) {
   if (bot.game.gameMode !== 'creative') throw new Error('施工需要创造模式，请在测试服设置 Bot 的游戏模式')
   const cells = orderCells(blueprint, origin)
   const selectItem = selectCreativeItem(bot, signal)
   const observed = new Map()
-  const summary = { total: cells.length, placed: 0, existing: 0, pending: cells.length, attempts: 0 }
+  const summary = { total: cells.length, placed: 0, existing: 0, cleared: 0, pending: cells.length, attempts: 0 }
   const keyFor = cell => cell.position.toString()
   let lastReport = 0
 
@@ -182,17 +182,45 @@ async function runCreativeBuild(bot, blueprint, origin, { signal, onProgress = (
     signal?.throwIfAborted()
     let current = bot.blockAt(cell.position)
     if (matches(current, cell)) return 'existing'
-    const known = observed.get(keyFor(cell))
     if (current && !AIR.has(current.name)) {
-      if (!retry || current.stateId !== known || !bot.canDigBlock(current)) return 'existing-block'
-      await bot.dig(current, true)
+      if (!replaceExisting && (!retry || current.stateId !== observed.get(keyFor(cell)))) return 'existing-block'
+      if (!current.diggable) return 'obstruction-not-breakable'
+      // Do not clear a cell before we know its intended material can be selected.
+      if (!await selectItem(cell)) return 'unsupported-item-or-state'
+      const originalState = current.stateId
+      const reachableBlock = () => {
+        const block = bot.blockAt(cell.position)
+        return block?.stateId === originalState && bot.canDigBlock(block) && bot.canSeeBlock(block) ? block : null
+      }
+      const obstruction = reachableBlock() ?? await moveForInteraction(bot, cell, signal, retry, reachableBlock)
       current = bot.blockAt(cell.position)
+      if (matches(current, cell)) return 'existing'
+      if (current && !AIR.has(current.name)) {
+        if (!obstruction || !reachableBlock()) return 'obstruction-out-of-reach'
+        signal?.throwIfAborted()
+        try {
+          await bot.dig(current, true)
+        } catch (error) {
+          signal?.throwIfAborted()
+          if (bot.game.gameMode !== 'creative') throw error
+          return 'clearance-rejected'
+        }
+        // Mineflayer can predict the removal locally before receiving a correction.
+        await wait(100, undefined, { signal })
+        current = bot.blockAt(cell.position)
+        if (matches(current, cell)) return 'existing'
+        if (!current || !AIR.has(current.name)) return 'clearance-rejected'
+        summary.cleared++
+      }
     }
-    if (current && !AIR.has(current.name)) return 'existing-block'
-    const click = clickPoint(bot, cell) ?? await moveForClick(bot, cell, signal, retry)
+    const reach = () => clickPoint(bot, cell)
+    const click = reach() ?? await moveForInteraction(bot, cell, signal, retry, reach)
     if (!click) return 'support-or-reach'
     if (!await selectItem(cell)) return 'unsupported-item-or-state'
     signal?.throwIfAborted()
+    current = bot.blockAt(cell.position)
+    if (matches(current, cell)) return 'existing'
+    if (current && !AIR.has(current.name)) return 'existing-block'
     const sneak = INTERACTIVE.test(click.support.name)
     if (sneak) bot.setControlState('sneak', true)
     try {

@@ -51,12 +51,18 @@ npm run build:creative -- $fixture 0 -60 0
 
 原点参数对应 Litematica 的选区原点。负尺寸和偏移子区域会保留各自的相对位置。默认用 `NMO-Builder`、`127.0.0.1:25567` 和 26.1，亦可通过 `MC_USERNAME`、`MC_HOST`、`MC_PORT`、`MC_VERSION` 设置。此入口面向独立测试服的离线 Bot 登录。
 
+需要替换施工点原有方块时，在蓝图文件名前加 `--replace-existing`。Bot 会逐块比较目标，再挖掉施工格内方块种类或状态不匹配的旧块并放上正确材料。模式只处理蓝图明确要求放置方块的坐标。符合蓝图的方块直接计入 `existing`，蓝图空气格与选区外方块保留原状。启用前请核对原点和施工区。
+
+```sh
+npm run build:creative -- --replace-existing "$fixture_dir/demo.litematic" 0 -60 0
+```
+
 在服务器控制台先执行 `gamemode spectator NMOViewer`，再执行 `spectate NMO-Builder NMOViewer`，即可从 Bot 视角看真实放置。按 Shift 可以退出跟随。
 
 ## 验收与继续施工
 
-- 看终端的 `BUILD_PROGRESS` 和 `BUILD_FINISHED`。样图从空地开始时应达到 `placed=9`、`pending=0`。以相同原点再运行一次时应为 `existing=9`、`placed=0`。
+- 看终端的 `BUILD_PROGRESS` 和 `BUILD_FINISHED`。样图从空地开始时应达到 `placed=9`、`pending=0`。以相同原点再运行一次时应为 `existing=9`、`placed=0`。`cleared` 记录本次清除的旧方块数。
 - 可用 `execute if block 2 -59 0 minecraft:smooth_quartz_stairs[facing=east,half=top,shape=straight,waterlogged=false]` 检查带属性的目标方块。
 - `Ctrl+C` 可以结束客户端。再次使用同一文件、服务器和原点会按世界里的现有方块续建。开新世界或更换蓝图时先核对原点和已有建筑。
-- 仍有未完成的格子时进程退出码为 `2`，终端列出前 20 个 `BUILD_UNRESOLVED`，包括位置、方块和原因。缺少支撑、没有安全飞行路线、已有异物或服务器拒绝放置都会留给后续处理。施工会保护开工前已存在的异物。
+- 仍有未完成的格子时进程退出码为 `2`，终端列出前 20 个 `BUILD_UNRESOLVED`，包括位置、方块和原因。默认保留开工前已存在的异物。启用替换后，无法挖掘、遮挡或够不着的方块会留待后续处理。
 - 本入口支持 Litematic v6 原版方块。实体、容器内容及其他方块实体附加数据会跳过。水流、重力和相邻更新仍按服务器的 Minecraft 规则执行。小型 `.nbt` 生存补给站继续走原有入口。
