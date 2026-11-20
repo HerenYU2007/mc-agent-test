@@ -340,8 +340,13 @@ class SupplyStation {
       const phase = outstanding[0].phase
       this.phase = phase
       let candidates = outstanding.filter(cell => cell.phase === phase)
+      const hutRim = this.hut && phase === '屋顶' ? candidates.filter(outerRoof) : []
       if (this.hut) {
         if ((phase === '墙体第 3 层' || phase === '屋顶') && !await this.climbHutPlatform(bot, work)) return
+        if (hutRim.length) {
+          this.phase = '屋顶外圈'
+          candidates = hutRim
+        }
         if (phase === '屋顶中格' && this.roofStep && !await this.removeHutPlatform(bot, work)) return
         if ((phase === '屋顶中格' || phase === '室内照明') && !bot.entity.position.floored().equals(center) &&
             (!await work.walk(new goals.GoalBlock(center.x, center.y, center.z), 6500) || !work.ready())) return
@@ -377,6 +382,8 @@ class SupplyStation {
         const blockedCorner = nearby.find(candidate => candidate.corner)?.cell
         if (blockedCorner && await this.openRoofCorner(bot, work, blockedCorner)) return
       }
+      if (hutRim.length && !nearby.some(candidate => candidate.reachable) &&
+          await this.openHutRoofRim(bot, work, outerRoof)) return
       const { advanced } = await runBuildPass(nearby.slice(0, 5), async ({ cell, goal }) =>
         await this.place(bot, work, cell, goal) ? 'placed' : 'deferred', {
         ready: work.ready,
@@ -399,6 +406,19 @@ class SupplyStation {
   hutPlatform() {
     const { center, front } = this.site
     return [center.plus(front), center, center.plus(UP)]
+  }
+
+  async openHutRoofRim(bot, work, outerRoof) {
+    // Older progress can have an inside slab sealing the line of sight to the rim.
+    const blocker = this.cells
+      .filter(cell => cell.phase === '屋顶' && !outerRoof(cell) && this.cellMatches(bot, cell))
+      .map(cell => bot.blockAt(cell.position))
+      .find(block => bot.canDigBlock(block) && bot.canSeeBlock(block))
+    if (!blocker || !work.ready() || !await work.dig(blocker)) return false
+    this.scan(bot)
+    this.save()
+    work.log('starter hut reopened roof access', { position: blocker.position })
+    return true
   }
 
   async clearHutEntrance(bot, work) {
