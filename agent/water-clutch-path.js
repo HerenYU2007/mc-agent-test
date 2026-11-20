@@ -5,22 +5,28 @@ const { bucketAvailable, supportsClutch, MIN_FALL_DISTANCE, OPEN } = require('./
 const MAX_CLUTCH_DROP = 10
 const SEARCH_BUDGET = 50
 
+function dropColumnLanding(bot, column) {
+  for (let level = 1; level >= -MAX_CLUTCH_DROP - 1; level--) {
+    const block = bot.blockAt(column.offset(0, level, 0))
+    if (OPEN.has(block?.name)) continue
+    const height = -level - 1
+    return height >= MIN_FALL_DISTANCE && supportsClutch(block) ? column.offset(0, level + 1, 0) : null
+  }
+  return null
+}
+
 function findClutchDrop(bot, edge, direction) {
   const { x: dx, z: dz } = direction
   const first = edge.offset(dx, 0, dz)
   if (!OPEN.has(bot.blockAt(first.offset(0, -1, 0))?.name) ||
       !supportsClutch(bot.blockAt(edge.offset(0, -1, 0)))) return null
+  const landing = dropColumnLanding(bot, first)
+  if (!landing) return null
   // The second column allows for momentum after the Bot walks off the edge.
-  const second = first.offset(dx, 0, dz)
-  for (let level = 1; level >= -MAX_CLUTCH_DROP - 1; level--) {
-    const firstBlock = bot.blockAt(first.offset(0, level, 0))
-    const secondBlock = bot.blockAt(second.offset(0, level, 0))
-    if (OPEN.has(firstBlock?.name) && OPEN.has(secondBlock?.name)) continue
-    const height = -level - 1
-    if (height < MIN_FALL_DISTANCE || !supportsClutch(firstBlock) || !supportsClutch(secondBlock)) return null
-    return { edge, direction, height, landing: first.offset(0, level + 1, 0) }
-  }
-  return null
+  const alternateLanding = dropColumnLanding(bot, first.offset(dx, 0, dz))
+  if (!alternateLanding || Math.abs(landing.y - alternateLanding.y) > 1) return null
+  const height = edge.y - Math.min(landing.y, alternateLanding.y)
+  return { edge, direction, height, landing, alternateLanding }
 }
 
 function planClutchStep(bot, goal, movements) {
@@ -37,9 +43,9 @@ function planClutchStep(bot, goal, movements) {
     const step = findClutchDrop(bot, new Vec3(node.x, node.y, node.z), direction)
     if (!step) return
     const { x, y, z } = step.landing
-    if (this.exclusionStep(bot.blockAt(step.landing)) >= 100 ||
-        this.getNumEntitiesAt(step.landing, 0, 0, 0) > 0) return
-    const move = new Move(x, y, z, node.remainingBlocks, 4 + step.height)
+    if ([step.landing, step.alternateLanding].some(position =>
+      this.exclusionStep(bot.blockAt(position)) >= 100 || this.getNumEntitiesAt(position, 0, 0, 0) > 0)) return
+    const move = new Move(x, y, z, node.remainingBlocks, 3 + step.height * 0.65)
     move.clutch = step
     neighbors.push(move)
   }
@@ -52,8 +58,11 @@ function planClutchStep(bot, goal, movements) {
 
 async function executeClutchStep(bot, step, { canStart, recoveredAt }, deadline) {
   const offhand = () => bot.inventory.slots[bot.getEquipmentDestSlot('off-hand')]?.name === 'water_bucket'
-  const ready = () => canStart() && bot.entity.onGround && bot.entity.position.floored().equals(step.edge) &&
-    findClutchDrop(bot, step.edge, step.direction)?.landing.equals(step.landing)
+  const ready = () => {
+    if (!canStart() || !bot.entity.onGround || !bot.entity.position.floored().equals(step.edge)) return false
+    const current = findClutchDrop(bot, step.edge, step.direction)
+    return current?.landing.equals(step.landing) && current.alternateLanding.equals(step.alternateLanding)
+  }
   if (!ready()) return false
   if (!offhand() && bot.heldItem?.name !== 'water_bucket') {
     const bucket = bot.inventory.items().find(item => item.name === 'water_bucket')
@@ -86,8 +95,8 @@ async function executeClutchStep(bot, step, { canStart, recoveredAt }, deadline)
     await bot.waitForTicks(1)
     const recovered = recoveredAt()
     if (recovered && recovered !== priorRecovery) {
-      const spareLanding = step.landing.offset(dx, 0, dz)
-      return bot.health >= health && (recovered.equals(step.landing) || recovered.equals(spareLanding))
+      if (bot.health >= health && (recovered.equals(step.landing) || recovered.equals(step.alternateLanding))) return true
+      break
     }
     if (bot.entity.onGround && bot.health < health) break
   }
