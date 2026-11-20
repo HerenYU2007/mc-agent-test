@@ -243,7 +243,8 @@ function createSwimming(runtimeState, features) {
   }
 
   function monitorSwimming() {
-    if (!runtimeState.botEnabled || !runtimeState.bot?.entity || runtimeState.bot.health <= 0) return
+    if (!runtimeState.botEnabled || !runtimeState.bot?.entity || runtimeState.bot.health <= 0 ||
+        features.isWaterClutchActive()) return
     const now = Date.now()
     const inWater = isActuallyInWater()
     if (swimOverride && (swimOverrideConnection !== runtimeState.bot || now > swimOverrideUntil)) swimOverride = null

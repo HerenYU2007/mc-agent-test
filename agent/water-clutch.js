@@ -3,6 +3,7 @@ const { WATER_BLOCK_NAMES } = require('./config')
 const MIN_FALL_DISTANCE = 5
 const LOOKAHEAD_TICKS = 14
 const REACH = 4.45
+const RECOVERY_TIMEOUT = 40
 const OPEN = new Set(['air', 'cave_air', 'void_air'])
 
 function findLanding(bot) {
@@ -38,14 +39,61 @@ function createWaterClutch(runtimeState, features) {
 
   function trackWaterClutch(bot) {
     let fall
+    let recovery
     let tick = 0
     const reset = () => {
       fall = null
+      recovery = null
       active.delete(bot)
     }
     const canUse = () => runtimeState.botEnabled && runtimeState.bot === bot && bot.entity && bot.health > 0 &&
       bot.game.gameMode === 'survival' && !bot.game.dimension.includes('nether')
-    const offhandFilled = () => bot.inventory.slots[bot.getEquipmentDestSlot('off-hand')]?.name === 'water_bucket'
+    const bucketName = offhand => (offhand ? bot.inventory.slots[bot.getEquipmentDestSlot('off-hand')] : bot.heldItem)?.name
+    const offhandFilled = () => bucketName(true) === 'water_bucket'
+    const isSource = position => {
+      const block = bot.blockAt(position)
+      return block?.name === 'water' && Number(block.getProperties().level) === 0
+    }
+
+    async function pickUpWater(current) {
+      const eye = bot.entity.position.offset(0, bot.entity.eyeHeight, 0)
+      const point = current.water.offset(0.5, 0.5, 0.5)
+      const ray = point.minus(eye)
+      const distance = ray.norm()
+      if (distance < 0.1 || distance > REACH) return
+      const hit = bot.world.raycast(eye, ray.scaled(1 / distance), distance)
+      if (hit && !hit.position.equals(current.water)) return
+      current.busy = true
+      try {
+        await bot.lookAt(point, true)
+        if (recovery !== current || !canUse() || !bot.entity.onGround ||
+            !isSource(current.water) || bucketName(current.offhand) !== 'bucket') return
+        current.lastAttempt = tick
+        current.attempts++
+        bot.activateItem(current.offhand)
+      } catch (error) {
+        features.log('water clutch recovery interrupted', { message: error.message })
+        if (recovery === current) reset()
+      } finally {
+        current.busy = false
+      }
+    }
+
+    function recoverWater(current) {
+      if (current.attempts && bucketName(current.offhand) === 'water_bucket' && !isSource(current.water)) {
+        features.log('water clutch water recovered', { position: current.water, health: bot.health })
+        return reset()
+      }
+      if (tick >= current.deadline) {
+        features.log('water clutch recovery timed out', { position: current.water })
+        return reset()
+      }
+      // Keep the water in place until the Bot has settled on solid ground.
+      const grounded = bot.entity.onGround && Math.abs(bot.entity.velocity.y) < 0.1
+      current.groundedTicks = grounded ? current.groundedTicks + 1 : 0
+      if (current.groundedTicks >= 4 && current.attempts < 3 && tick - current.lastAttempt >= 5 &&
+          !current.busy && isSource(current.water) && bucketName(current.offhand) === 'bucket') void pickUpWater(current)
+    }
 
     async function intervene(current, bucket) {
       current.busy = true
@@ -72,6 +120,7 @@ function createWaterClutch(runtimeState, features) {
         current.attempts++
         current.lastAttempt = tick
         current.water = landing.water
+        current.offhand = offhand
         current.height = Number((current.peak - landing.point.y).toFixed(2))
         bot.activateItem(offhand)
         features.log('water clutch attempted', { position: current.water, fallHeight: current.height,
@@ -87,14 +136,19 @@ function createWaterClutch(runtimeState, features) {
     bot.on('physicsTick', () => {
       tick++
       if (!canUse()) return reset()
-      if (fall?.water && !fall.placed && bot.blockAt(fall.water)?.name === 'water') {
+      if (recovery) return recoverWater(recovery)
+      if (fall?.water && !fall.placed && isSource(fall.water)) {
         fall.placed = true
         features.log('water clutch placed', { position: fall.water, fallHeight: fall.height })
       }
       const { position, velocity, onGround, isInWater } = bot.entity
       if (onGround || isInWater) {
-        if (fall?.placed) features.log('water clutch landed', { position, fallHeight: fall.height, health: bot.health })
-        return reset()
+        if (!fall?.placed) return reset()
+        features.log('water clutch landed', { position, fallHeight: fall.height, health: bot.health })
+        recovery = { water: fall.water, offhand: fall.offhand, deadline: tick + RECOVERY_TIMEOUT,
+          groundedTicks: 0, attempts: 0, lastAttempt: -Infinity }
+        fall = null
+        return
       }
       fall ??= { peak: position.y, attempts: 0, lastAttempt: -Infinity }
       fall.peak = Math.max(fall.peak, position.y)
