@@ -17,7 +17,9 @@ function bucketAvailable(bot, name) {
 function supportsClutch(block) {
   return Boolean(block && !WATER_BLOCK_NAMES.has(block.name) &&
     !/lava|powder_snow|cobweb|slime_block|honey_block|magma_block/.test(block.name) &&
-    block.shapes.some(([x1, , z1, x2, y2, z2]) => x1 === 0 && z1 === 0 && x2 === 1 && y2 === 1 && z2 === 1))
+    block.shapes.some(([x1, , z1, x2, y2, z2]) => x1 === 0 && z1 === 0 && x2 === 1 && y2 === 1 && z2 === 1) &&
+    // A waterloggable block can absorb the bucket's water instead of placing it above.
+    !Object.hasOwn(block.getProperties(), 'waterlogged'))
 }
 
 function isWaterSource(block) {
