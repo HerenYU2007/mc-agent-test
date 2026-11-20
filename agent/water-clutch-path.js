@@ -1,5 +1,6 @@
 const Move = require('mineflayer-pathfinder/lib/move')
 const { Vec3 } = require('vec3')
+const { WATER_BLOCK_NAMES } = require('./config')
 const { bucketAvailable, supportsClutch, MIN_FALL_DISTANCE, OPEN } = require('./water-clutch')
 
 const MAX_CLUTCH_DROP = 50
@@ -95,12 +96,14 @@ async function executeClutchStep(bot, step, { canStart, recoveredAt }, deadline)
   }
   if (!falling) return false
 
+  const landings = [step.landing, step.alternateLanding]
   for (let ticks = 0; ticks < 80 && bot.health > 0 && Date.now() < deadline; ticks++) {
     await bot.waitForTicks(1)
     const recovered = recoveredAt()
     if (recovered && recovered !== priorRecovery) {
-      if (bot.health >= health && (recovered.equals(step.landing) || recovered.equals(step.alternateLanding))) return true
-      break
+      if (bot.health < health || !landings.some(position => recovered.equals(position))) break
+      // A neighboring waypoint can stay flooded for a few ticks after pickup.
+      if (bot.entity.onGround && landings.every(position => !WATER_BLOCK_NAMES.has(bot.blockAt(position)?.name))) return true
     }
     if (bot.entity.onGround && bot.health < health) break
   }
