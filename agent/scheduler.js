@@ -283,6 +283,7 @@ function createScheduler(runtimeState, features) {
       await features.clearBackpack(runtimeState.bot, 'routine')
       if (!runtimeState.bot?.entity || runtimeState.bot.health <= 0) return
       await features.autoEquipArmor()
+      if (!immediate && await features.tryFillTravelBucket(runtimeState.bot)) return
       if (!immediate && !features.closeCombatPlan() && runtimeState.supplyStation.pending) {
         await features.buildSupplyStation()
         return

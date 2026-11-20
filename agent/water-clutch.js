@@ -1,10 +1,36 @@
 const { WATER_BLOCK_NAMES } = require('./config')
+const { goals } = require('mineflayer-pathfinder')
 
 const MIN_FALL_DISTANCE = 5
 const LOOKAHEAD_TICKS = 14
 const REACH = 4.45
 const RECOVERY_TIMEOUT = 40
 const OPEN = new Set(['air', 'cave_air', 'void_air'])
+
+function bucketAvailable(bot, name) {
+  return bot.heldItem?.name === name ||
+    bot.inventory.slots[bot.getEquipmentDestSlot('off-hand')]?.name === name ||
+    bot.inventory.items().some(item => item.name === name)
+}
+
+function supportsClutch(block) {
+  return Boolean(block && !WATER_BLOCK_NAMES.has(block.name) &&
+    !/lava|powder_snow|cobweb|slime_block|honey_block|magma_block/.test(block.name) &&
+    block.shapes.some(([x1, , z1, x2, y2, z2]) => x1 === 0 && z1 === 0 && x2 === 1 && y2 === 1 && z2 === 1))
+}
+
+function isWaterSource(block) {
+  return block?.name === 'water' && Number(block.getProperties().level) === 0
+}
+
+function sourceAim(bot, source, eye = bot.entity.position.offset(0, bot.entity.eyeHeight, 0)) {
+  const point = source.offset(0.5, 0.5, 0.5)
+  const ray = point.minus(eye)
+  const distance = ray.norm()
+  if (distance < 0.1 || distance > REACH) return null
+  const hit = bot.world.raycast(eye, ray.scaled(1 / distance), distance)
+  return !hit || hit.position.equals(source) ? point : null
+}
 
 function findLanding(bot) {
   let position = bot.entity.position.clone()
@@ -17,11 +43,9 @@ function findLanding(bot) {
       const block = bot.blockAt(column)
       if (!block || WATER_BLOCK_NAMES.has(block.name) || /lava|powder_snow|cobweb/.test(block.name)) return null
       if (!block.shapes.length) continue
-      const fullTop = block.shapes.some(([x1, , z1, x2, y2, z2]) =>
-        x1 === 0 && z1 === 0 && x2 === 1 && y2 === 1 && z2 === 1)
       if (y + 1 > position.y || y + 1 < next.y) continue
       const above = bot.blockAt(column.offset(0, 1, 0))
-      if (!fullTop || !OPEN.has(above?.name) || /slime_block|honey_block/.test(block.name)) return null
+      if (!supportsClutch(block) || !OPEN.has(above?.name)) return null
       const inset = (coordinate, start) => Math.max(0.14, Math.min(0.86, coordinate - start))
       const point = column.offset(inset(next.x, column.x), 1, inset(next.z, column.z))
       return { block, point, water: above.position }
@@ -36,6 +60,63 @@ function findLanding(bot) {
 
 function createWaterClutch(runtimeState, features) {
   const active = new WeakSet()
+  const lastRecovered = new WeakMap()
+  const nextRefill = new WeakMap()
+
+  async function tryFillTravelBucket(bot) {
+    const safe = () => features.canWorkHere(bot) && bot.game?.gameMode === 'survival' &&
+      !bot.game.dimension.includes('nether') && bot.entity.onGround && !bot.entity.isInWater &&
+      !features.foodRecoveryNeeded() && !features.closeCombatPlan() && !bot.pathfinder.goal
+    if (!safe() || !bucketAvailable(bot, 'bucket') || bucketAvailable(bot, 'water_bucket') ||
+        (nextRefill.get(bot) ?? 0) > Date.now()) return false
+    nextRefill.set(bot, Date.now() + 20000)
+    const sources = bot.findBlocks({ matching: block => isWaterSource(block) &&
+      !runtimeState.supplyBase.owns(bot, block.position), maxDistance: 8, count: 12 })
+    const reachable = () => sources.find(pos => isWaterSource(bot.blockAt(pos)) && sourceAim(bot, pos))
+    let source = reachable()
+    try {
+      if (!source) {
+        const origin = bot.entity.position
+        const stands = new Map()
+        for (const water of sources) {
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            for (const dy of [0, 1, 2]) {
+              const feet = water.offset(dx, dy, dz)
+              if (feet.distanceTo(origin) > 8 || !OPEN.has(bot.blockAt(feet)?.name) ||
+                  !OPEN.has(bot.blockAt(feet.offset(0, 1, 0))?.name) ||
+                  !supportsClutch(bot.blockAt(feet.offset(0, -1, 0))) ||
+                  !sourceAim(bot, water, feet.offset(0.5, bot.entity.eyeHeight, 0.5))) continue
+              stands.set(feet.toString(), new goals.GoalBlock(feet.x, feet.y, feet.z))
+            }
+          }
+        }
+        if (!stands.size) return false
+        await features.gotoWithTimeout(new goals.GoalCompositeAny([...stands.values()]), 'fill water bucket', 3000, { allowClutch: false })
+        source = reachable()
+      }
+      if (!source || !safe()) return false
+      const offhand = bot.inventory.slots[bot.getEquipmentDestSlot('off-hand')]?.name === 'bucket'
+      if (!offhand && bot.heldItem?.name !== 'bucket') {
+        const bucket = bot.inventory.items().find(item => item.name === 'bucket')
+        if (!bucket) return false
+        await bot.equip(bucket, 'hand')
+      }
+      const point = sourceAim(bot, source)
+      if (!point || !safe()) return false
+      await bot.lookAt(point, true)
+      if (!safe() || !isWaterSource(bot.blockAt(source))) return false
+      bot.activateItem(offhand)
+      for (let attempt = 0; attempt < 6 && !bucketAvailable(bot, 'water_bucket'); attempt++) {
+        await bot.waitForTicks(1)
+      }
+      if (!bucketAvailable(bot, 'water_bucket')) return false
+      features.log('travel water bucket filled', { position: source })
+      return true
+    } catch (error) {
+      features.log('travel water bucket refill interrupted', { message: error.message })
+      return false
+    }
+  }
 
   function trackWaterClutch(bot) {
     let fall
@@ -50,19 +131,11 @@ function createWaterClutch(runtimeState, features) {
       bot.game.gameMode === 'survival' && !bot.game.dimension.includes('nether')
     const bucketName = offhand => (offhand ? bot.inventory.slots[bot.getEquipmentDestSlot('off-hand')] : bot.heldItem)?.name
     const offhandFilled = () => bucketName(true) === 'water_bucket'
-    const isSource = position => {
-      const block = bot.blockAt(position)
-      return block?.name === 'water' && Number(block.getProperties().level) === 0
-    }
+    const isSource = position => isWaterSource(bot.blockAt(position))
 
     async function pickUpWater(current) {
-      const eye = bot.entity.position.offset(0, bot.entity.eyeHeight, 0)
-      const point = current.water.offset(0.5, 0.5, 0.5)
-      const ray = point.minus(eye)
-      const distance = ray.norm()
-      if (distance < 0.1 || distance > REACH) return
-      const hit = bot.world.raycast(eye, ray.scaled(1 / distance), distance)
-      if (hit && !hit.position.equals(current.water)) return
+      const point = sourceAim(bot, current.water)
+      if (!point) return
       current.busy = true
       try {
         await bot.lookAt(point, true)
@@ -81,6 +154,7 @@ function createWaterClutch(runtimeState, features) {
 
     function recoverWater(current) {
       if (current.attempts && bucketName(current.offhand) === 'water_bucket' && !isSource(current.water)) {
+        lastRecovered.set(bot, current.water)
         features.log('water clutch water recovered', { position: current.water, health: bot.health })
         return reset()
       }
@@ -165,7 +239,12 @@ function createWaterClutch(runtimeState, features) {
     bot.once('end', reset)
   }
 
-  return { trackWaterClutch, isWaterClutchActive: (bot = runtimeState.bot) => active.has(bot) }
+  return { trackWaterClutch, tryFillTravelBucket, waterClutchRecoveredAt: bot => lastRecovered.get(bot),
+    isWaterClutchActive: (bot = runtimeState.bot) => active.has(bot) }
 }
 
 module.exports = createWaterClutch
+module.exports.bucketAvailable = bucketAvailable
+module.exports.supportsClutch = supportsClutch
+module.exports.MIN_FALL_DISTANCE = MIN_FALL_DISTANCE
+module.exports.OPEN = OPEN

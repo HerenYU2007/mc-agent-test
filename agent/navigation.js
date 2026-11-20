@@ -1,6 +1,7 @@
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const { WATER_BLOCK_NAMES } = require('./config')
+const { planClutchStep, executeClutchStep } = require('./water-clutch-path')
 
 function createNavigation(runtimeState, features) {
   let lastParticleAt = 0
@@ -87,9 +88,7 @@ function createNavigation(runtimeState, features) {
     await gotoWithTimeout(new goals.GoalNearXZ(x, z, 2), label, Math.min(26000, 7500 + distance * 350))
   }
 
-  async function gotoWithTimeout(goal, label, timeoutMs) {
-    if (features.waterOwnsMovement()) throw new Error('movement paused until the bot reaches dry ground')
-    const connection = runtimeState.bot
+  async function walkWithTimeout(connection, goal, label, timeoutMs) {
     let timer
     const movement = connection.pathfinder.goto(goal)
     const timeout = new Promise((_, reject) => {
@@ -102,7 +101,36 @@ function createNavigation(runtimeState, features) {
       return await Promise.race([movement, timeout])
     } finally {
       clearTimeout(timer)
+      if (connection.pathfinder.goal === goal) connection.pathfinder.setGoal(null)
     }
+  }
+
+  async function gotoWithTimeout(goal, label, timeoutMs, { allowClutch = true } = {}) {
+    if (features.waterOwnsMovement()) throw new Error('movement paused until the bot reaches dry ground')
+    const connection = runtimeState.bot
+    const deadline = Date.now() + timeoutMs
+    const canStart = () => runtimeState.bot === connection && runtimeState.botEnabled && connection.entity &&
+      connection.health >= 10 && !connection.entity.isInWater && !connection.pathfinder.goal &&
+      !runtimeState.fleeingActive && !runtimeState.emergencyRetreating && !features.isWaterClutchActive(connection) &&
+      !features.closeCombatPlan()
+    while (allowClutch && deadline - Date.now() > 3000 && canStart() &&
+        connection.pathfinder.movements === runtimeState.movements) {
+      const step = planClutchStep(connection, goal, runtimeState.movements)
+      if (!step) break
+      const { edge, landing } = step
+      if (!connection.entity.position.floored().equals(edge)) {
+        await walkWithTimeout(connection, new goals.GoalBlock(edge.x, edge.y, edge.z), label, deadline - Date.now() - 2500)
+      }
+      if (!canStart()) throw new Error('movement interrupted before water clutch')
+      features.log('planned water clutch selected', { edge, landing, height: step.height })
+      if (!await executeClutchStep(connection, step,
+        { canStart, recoveredAt: () => features.waterClutchRecoveredAt(connection) }, deadline)) break
+      if (goal.isEnd(connection.entity.position.floored())) return
+    }
+    if (deadline <= Date.now()) throw new Error(`${label} timeout`)
+    if (runtimeState.bot !== connection || !runtimeState.botEnabled || connection.health <= 0 ||
+        features.waterOwnsMovement() || features.isWaterClutchActive(connection)) throw new Error('movement interrupted')
+    return walkWithTimeout(connection, goal, label, deadline - Date.now())
   }
 
   function canWorkHere(connection, duringMining = false) {

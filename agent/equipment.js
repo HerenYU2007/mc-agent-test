@@ -73,6 +73,11 @@ function createEquipment(runtimeState, features) {
       plans.splice(plans[0]?.type === 'pickaxe' ? 1 : 0, 0,
         { item: 'shield', type: 'shield', label: '盾牌', resource, cost: 1, planks: 6 })
     }
+    if (tier === 'iron' && !names.has('bucket') && !names.has('water_bucket')) {
+      const armorIndex = plans.findIndex(plan => ['chestplate', 'leggings', 'helmet', 'boots'].includes(plan.type))
+      plans.splice(armorIndex === -1 ? plans.length : armorIndex, 0,
+        { item: 'bucket', type: 'bucket', label: '铁桶', resource, cost: 3 })
+    }
     return plans
   }
 
