@@ -37,11 +37,13 @@ function setup(name, health, village = false) {
 }
 
 async function test() {
-  const layout = shelterGeometry(origin)
-  assert.equal(layout.shell.length, 38)
-  assert.equal(layout.shell.filter(position => position.y === 72).length, 16)
-  assert.equal(layout.lights.length, 5)
-  assert.equal(layout.shell.some(position => position.equals(layout.door)), false)
+  const front = point(0, 0, 1)
+  const layout = shelterGeometry({ center: origin, front, entry: origin.plus(front.scaled(3)), supports: [] })
+  assert.equal(layout.cells.length, 80)
+  assert.equal(layout.cells.filter(cell => cell.block === 'wooden_slab').length, 25)
+  assert.equal(layout.cells.filter(cell => cell.block === 'wall_torch').length, 4)
+  assert.equal(layout.cells.filter(cell => cell.block === 'glass').length, 2)
+  assert(layout.cells.find(cell => cell.block === 'wooden_door').position.equals(layout.door))
   assert.equal(layout.foot.distanceTo(layout.head), 1)
   assert.equal(farmPlots(origin).length, 8)
   assert(farmPlots(origin).every(plot => plot.distanceTo(origin) <= Math.SQRT2 && !plot.equals(origin)))

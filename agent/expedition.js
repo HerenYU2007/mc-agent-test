@@ -306,7 +306,8 @@ function createVillageExpedition(api) {
     return state.phase
   }
 
-  return { active, continueTrip, prepare, owns: position => shelter.owns(state, position), inside: bot => shelter.within(bot, state),
+  const owns = position => shelter.owns(state, position)
+  return { active, continueTrip, prepare, owns, inside: bot => shelter.within(bot, state),
     buildingShelter: () => Boolean(state.hut && !state.hut.completed && state.phase === 'preparing'),
     leave: bot => shelter.leave(bot, state),
     status: () => ({ phase: state.phase, reason: state.reason, room: state.room, spawn: state.spawn,
