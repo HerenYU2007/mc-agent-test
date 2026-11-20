@@ -321,7 +321,7 @@ class SupplyStation {
       Math.max(Math.abs(cell.position.x - center.x), Math.abs(cell.position.z - center.z)) === 2
     const roofCorner = cell => Math.abs(cell.position.x - center.x) === 2 && Math.abs(cell.position.z - center.z) === 2
     const roofStepNeeded = () => AIR.has(bot.blockAt(center.offset(0, 3, 0))?.name)
-    if (this.hut && missing.some(cell => cell.phase === '屋顶')) {
+    if (this.hut && missing.some(cell => outerRoof(cell) || cell.phase === '墙体第 3 层')) {
       const needed = this.hutPlatform().filter(position => !matches(bot.blockAt(position)?.name, PLANK)).length
       materials.planks = (materials.planks ?? 0) + needed
     } else if (missing.some(outerRoof) && roofStepNeeded() && !matches(bot.blockAt(center.plus(UP))?.name, PLANK)) {
@@ -342,12 +342,13 @@ class SupplyStation {
       let candidates = outstanding.filter(cell => cell.phase === phase)
       const hutRim = this.hut && phase === '屋顶' ? candidates.filter(outerRoof) : []
       if (this.hut) {
-        if ((phase === '墙体第 3 层' || phase === '屋顶') && !await this.climbHutPlatform(bot, work)) return
+        if ((phase === '墙体第 3 层' || hutRim.length) && !await this.climbHutPlatform(bot, work)) return
         if (hutRim.length) {
           this.phase = '屋顶外圈'
           candidates = hutRim
         }
-        if (phase === '屋顶中格' && this.roofStep && !await this.removeHutPlatform(bot, work)) return
+        if (!hutRim.length && (phase === '屋顶' || phase === '屋顶中格') &&
+            this.roofStep && !await this.removeHutPlatform(bot, work)) return
         if ((phase === '屋顶中格' || phase === '室内照明') && !bot.entity.position.floored().equals(center) &&
             (!await work.walk(new goals.GoalBlock(center.x, center.y, center.z), 6500) || !work.ready())) return
         if (phase === '门' && !this.spawnSet) {
