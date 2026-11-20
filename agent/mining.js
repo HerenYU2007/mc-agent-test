@@ -402,8 +402,8 @@ function createMining(runtimeState, features) {
     const coalReady = targets.every(name => COAL_TARGETS.has(name)) &&
       (coal >= 4 || (raw > 0 && fuel > 0) || (ironPick && features.inventoryItemCount('torch') < 8 && coal >= 1))
     const upgrade = features.nextIronUpgrade()
-    const ironReady = targets.every(name => IRON_INPUT_NAMES.has(name)) && upgrade &&
-      (ingots >= upgrade.cost || (fuel > 0 && raw + ingots >= upgrade.cost))
+    // Once the ore is in hand, let progression handle fuel and smelting.
+    const ironReady = targets.every(name => IRON_INPUT_NAMES.has(name)) && upgrade && raw + ingots >= upgrade.cost
     const diamondPriority = runtimeState.currentMineOrder?.source !== 'station' && features.needsPostArmorDiamonds(runtimeState.bot) && features.hasDiamondMiningTool(runtimeState.bot) &&
       !targets.every(name => /^(deepslate_)?diamond_ore$/.test(name))
     if (!stoneReady && !coalReady && !ironReady && !diamondPriority) return false
