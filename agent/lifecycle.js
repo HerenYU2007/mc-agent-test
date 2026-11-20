@@ -48,6 +48,7 @@ function createLifecycle(runtimeState, features) {
     connection.once('spawn', () => {
       if (runtimeState.bot !== connection) return
       features.trackCombatImpacts(connection)
+      features.trackWaterClutch(connection)
       // digTime is defined by mineflayer's digging plugin, so it only exists here.
       if (typeof connection.digTime === 'function') features.installDigTimeFix(connection)
       else features.log('digTime not available; dig timing fix not installed')

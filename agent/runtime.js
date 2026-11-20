@@ -6,6 +6,7 @@ const createTelemetry = require('./telemetry')
 const createNavigation = require('./navigation')
 const createWorld = require('./world')
 const createSwimming = require('./swimming')
+const createWaterClutch = require('./water-clutch')
 const createCanopy = require('./canopy')
 const createModel = require('./model')
 const createCombat = require('./combat')
@@ -39,6 +40,7 @@ function startAgent() {
     createNavigation,
     createWorld,
     createSwimming,
+    createWaterClutch,
     createCanopy,
     createModel,
     createCombat,

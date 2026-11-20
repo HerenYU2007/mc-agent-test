@@ -107,7 +107,8 @@ function createNavigation(runtimeState, features) {
 
   function canWorkHere(connection, duringMining = false) {
     return connection === runtimeState.bot && runtimeState.botEnabled && connection?.entity && connection.health > 0 &&
-      !runtimeState.emergencyRetreating && !features.waterOwnsMovement() && (!runtimeState.mineBusy || duringMining)
+      !runtimeState.emergencyRetreating && !features.waterOwnsMovement() && !features.isWaterClutchActive(connection) &&
+      (!runtimeState.mineBusy || duringMining)
   }
 
   async function moveToModelTarget(target, label = 'model target') {

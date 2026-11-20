@@ -15,7 +15,8 @@ function createScheduler(runtimeState, features) {
   }
 
   async function decideAndAct(trigger = 'scheduled') {
-    if (!runtimeState.botEnabled || !runtimeState.bot?.entity || runtimeState.bot.health <= 0 || features.waterOwnsMovement()) return
+    if (!runtimeState.botEnabled || !runtimeState.bot?.entity || runtimeState.bot.health <= 0 ||
+        features.waterOwnsMovement() || features.isWaterClutchActive()) return
     if (runtimeState.bot && runtimeState.impactGuards.has(runtimeState.bot)) return
     if (runtimeState.emergencyRetreating || runtimeState.fleeingActive) {
       if (trigger.startsWith('urgent')) runtimeState.urgentThreatQueued = true
