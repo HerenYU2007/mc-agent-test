@@ -157,7 +157,9 @@ function createWaterClutch(runtimeState, features) {
     }
 
     function recoverWater(current) {
-      if (current.attempts && bucketName(current.offhand) === 'water_bucket' && !isSource(current.water)) {
+      const bucketRecovered = current.attempts && bucketName(current.offhand) === 'water_bucket' && !isSource(current.water)
+      const feet = bot.entity.position.floored()
+      if (bucketRecovered && !bot.entity.isInWater && !features.isWaterBlock(bot.blockAt(feet))) {
         lastRecovered.set(bot, current.water)
         features.log('water clutch water recovered', { position: current.water, health: bot.health })
         return reset()
@@ -166,6 +168,7 @@ function createWaterClutch(runtimeState, features) {
         features.log('water clutch recovery timed out', { position: current.water })
         return reset()
       }
+      if (bucketRecovered) return
       // Keep the water in place until the Bot has settled on solid ground.
       const grounded = bot.entity.onGround && Math.abs(bot.entity.velocity.y) < 0.1
       current.groundedTicks = grounded ? current.groundedTicks + 1 : 0
@@ -185,30 +188,41 @@ function createWaterClutch(runtimeState, features) {
         }
         if (!offhandFilled() && bot.heldItem?.name !== 'water_bucket') await bot.equip(bucket, 'hand')
         if (fall !== current || !canUse() || bot.entity.onGround || bot.entity.isInWater) return
-        const landing = findLanding(bot)
-        if (!landing || current.peak - landing.point.y < MIN_FALL_DISTANCE) return
-        const eye = bot.entity.position.offset(0, bot.entity.eyeHeight, 0)
-        if (eye.distanceTo(landing.point) > REACH) return
-        const hit = bot.world.raycast(eye, landing.point.minus(eye).normalize(), REACH)
-        if (!hit?.position.equals(landing.block.position) || hit.face !== 1) return
-        await bot.lookAt(landing.point, true)
-        if (fall !== current || !canUse() || bot.entity.onGround || bot.entity.isInWater) return
-        const offhand = offhandFilled()
-        if (!offhand && bot.heldItem?.name !== 'water_bucket') return
-        current.attempts++
-        current.lastAttempt = tick
-        current.water = landing.water
-        current.offhand = offhand
-        current.height = Number((current.peak - landing.point.y).toFixed(2))
-        bot.activateItem(offhand)
-        features.log('water clutch attempted', { position: current.water, fallHeight: current.height,
-          footingDistance: Number((bot.entity.position.y - landing.point.y).toFixed(2)), attempt: current.attempts })
+        // The move event follows the position packet for this physics tick.
+        // Send item use there, even when physics advances several ticks together.
+        bot.once('move', () => placeWater(current))
       } catch (error) {
         features.log('water clutch interrupted', { message: error.message })
         reset()
       } finally {
         current.busy = false
       }
+    }
+
+    function placeWater(current) {
+      if (fall !== current || !canUse() || bot.entity.onGround || bot.entity.isInWater) return
+      const landing = findLanding(bot)
+      if (!landing || current.peak - landing.point.y < MIN_FALL_DISTANCE) return
+      const eye = bot.entity.position.offset(0, bot.entity.eyeHeight, 0)
+      if (eye.distanceTo(landing.point) > REACH) return
+      const hit = bot.world.raycast(eye, landing.point.minus(eye).normalize(), REACH)
+      if (!hit?.position.equals(landing.block.position) || hit.face !== 1) return
+      const offhand = offhandFilled()
+      if (!offhand && bot.heldItem?.name !== 'water_bucket') return
+      // A forced look updates the local rotation synchronously. activateItem
+      // includes that rotation in the use-item packet.
+      void bot.lookAt(landing.point, true).catch(error => {
+        features.log('water clutch interrupted', { message: error.message })
+        if (fall === current) reset()
+      })
+      current.attempts++
+      current.lastAttempt = tick
+      current.water = landing.water
+      current.offhand = offhand
+      current.height = Number((current.peak - landing.point.y).toFixed(2))
+      bot.activateItem(offhand)
+      features.log('water clutch attempted', { position: current.water, fallHeight: current.height,
+        footingDistance: Number((bot.entity.position.y - landing.point.y).toFixed(2)), attempt: current.attempts })
     }
 
     bot.on('physicsTick', () => {
