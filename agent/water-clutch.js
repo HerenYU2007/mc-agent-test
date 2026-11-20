@@ -4,6 +4,7 @@ const { goals } = require('mineflayer-pathfinder')
 const MIN_FALL_DISTANCE = 5
 const LOOKAHEAD_TICKS = 14
 const REACH = 4.45
+const PLACEMENT_CONFIRM_TICKS = 8
 const RECOVERY_TIMEOUT = 40
 const OPEN = new Set(['air', 'cave_air', 'void_air'])
 
@@ -235,7 +236,12 @@ function createWaterClutch(runtimeState, features) {
       }
       const { position, velocity, onGround, isInWater } = bot.entity
       if (onGround || isInWater) {
-        if (!fall?.placed) return reset()
+        if (!fall?.placed) {
+          // Local physics can land before the server's water placement update.
+          // Retain control while that response is still in flight.
+          if (fall?.attempts && tick - fall.lastAttempt <= PLACEMENT_CONFIRM_TICKS) return
+          return reset()
+        }
         features.log('water clutch landed', { position, fallHeight: fall.height, health: bot.health })
         recovery = { water: fall.water, offhand: fall.offhand, deadline: tick + RECOVERY_TIMEOUT,
           groundedTicks: 0, attempts: 0, lastAttempt: -Infinity }

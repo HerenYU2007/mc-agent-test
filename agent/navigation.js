@@ -1,7 +1,7 @@
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const { WATER_BLOCK_NAMES } = require('./config')
-const { planClutchStep, executeClutchStep } = require('./water-clutch-path')
+const { planClutchStep, executeClutchStep, clutchTimeBudget } = require('./water-clutch-path')
 
 function createNavigation(runtimeState, features) {
   let lastParticleAt = 0
@@ -119,9 +119,11 @@ function createNavigation(runtimeState, features) {
     while (clutchEnabled && deadline - Date.now() > 3000 && canStart()) {
       const step = planClutchStep(connection, goal, movements)
       if (!step) break
+      const approachTime = deadline - Date.now() - clutchTimeBudget(step.height)
+      if (approachTime <= 0) break
       const { edge, landing } = step
       if (!connection.entity.position.floored().equals(edge)) {
-        await walkWithTimeout(connection, new goals.GoalBlock(edge.x, edge.y, edge.z), label, deadline - Date.now() - 2500)
+        await walkWithTimeout(connection, new goals.GoalBlock(edge.x, edge.y, edge.z), label, approachTime)
       }
       if (!canStart()) throw new Error('movement interrupted before water clutch')
       features.log('planned water clutch selected', { edge, landing, height: step.height })

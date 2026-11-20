@@ -5,6 +5,10 @@ const { bucketAvailable, supportsClutch, MIN_FALL_DISTANCE, OPEN } = require('./
 const MAX_CLUTCH_DROP = 50
 const SEARCH_BUDGET = 50
 
+function clutchTimeBudget(height) {
+  return Math.max(2500, 2250 + height * 25)
+}
+
 function dropColumnLanding(bot, column) {
   for (let level = 1; level >= -MAX_CLUTCH_DROP - 1; level--) {
     const block = bot.blockAt(column.offset(0, level, 0))
@@ -72,7 +76,7 @@ async function executeClutchStep(bot, step, { canStart, recoveredAt }, deadline)
   const { x: dx, z: dz } = step.direction
   const aim = step.edge.offset(0.5 + dx * 1.75, bot.entity.eyeHeight, 0.5 + dz * 1.75)
   await bot.lookAt(aim, true)
-  if (!ready() || (!offhand() && bot.heldItem?.name !== 'water_bucket') || deadline - Date.now() < 2500) return false
+  if (!ready() || (!offhand() && bot.heldItem?.name !== 'water_bucket') || deadline - Date.now() < clutchTimeBudget(step.height)) return false
 
   const priorRecovery = recoveredAt()
   const health = bot.health
@@ -91,7 +95,7 @@ async function executeClutchStep(bot, step, { canStart, recoveredAt }, deadline)
   }
   if (!falling) return false
 
-  for (let ticks = 0; ticks < 64 && bot.health > 0 && Date.now() < deadline; ticks++) {
+  for (let ticks = 0; ticks < 80 && bot.health > 0 && Date.now() < deadline; ticks++) {
     await bot.waitForTicks(1)
     const recovered = recoveredAt()
     if (recovered && recovered !== priorRecovery) {
@@ -103,4 +107,4 @@ async function executeClutchStep(bot, step, { canStart, recoveredAt }, deadline)
   throw new Error('water clutch landing and recovery could not be confirmed')
 }
 
-module.exports = { planClutchStep, executeClutchStep }
+module.exports = { planClutchStep, executeClutchStep, clutchTimeBudget }
