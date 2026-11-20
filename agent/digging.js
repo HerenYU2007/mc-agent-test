@@ -132,8 +132,20 @@ function createDigging(runtimeState, features) {
         }
       }
 
-      // Aim towards the block center before starting dig
-      targetCenter = current.position.offset(0.5, 0.5, 0.5)
+      // Partial blocks can have air at the center of their block coordinates.
+      eyes = connection.entity.position.offset(0, connection.entity.eyeHeight, 0)
+      const samples = [[0.5, 0.5, 0.5]]
+      if (current.shapes.some(shape => shape.some((value, index) => value !== Number(index >= 3)))) {
+        for (const x of [0.12, 0.88]) for (const y of [0.12, 0.88]) {
+          for (const z of [0.12, 0.88]) samples.push([x, y, z])
+        }
+      }
+      const visibleShape = current.shapes.flatMap(([x1, y1, z1, x2, y2, z2]) => samples.map(([x, y, z]) =>
+        current.position.offset(x1 + (x2 - x1) * x, y1 + (y2 - y1) * y, z1 + (z2 - z1) * z))).find(point => {
+        const ray = point.minus(eyes)
+        return connection.world.raycast(eyes, ray.normalize(), 4.5)?.position.equals(current.position)
+      })
+      targetCenter = visibleShape ?? current.position.offset(0.5, 0.5, 0.5)
       await connection.lookAt(targetCenter, true)
       const hit = connection.blockAtCursor(4.5)
       if (!hit || hit.type !== current.type || !hit.position.equals(current.position)) {
@@ -146,7 +158,7 @@ function createDigging(runtimeState, features) {
 
       features.log('digging selected block', { block: current.name, position: current.position, expectedMs: expectedTime, timeoutMs })
       await Promise.race([
-        connection.dig(current, true),
+        connection.dig(current, 'ignore'),
         new Promise((_, reject) => {
           timer = setTimeout(() => {
             reject(new Error('block dig timeout'))

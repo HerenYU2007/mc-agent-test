@@ -410,15 +410,19 @@ class SupplyStation {
 
   async openHutRoofRim(bot, work, outerRoof) {
     // Older progress can have an inside slab sealing the line of sight to the rim.
-    const blocker = this.cells
+    const blockers = this.cells
       .filter(cell => cell.phase === '屋顶' && !outerRoof(cell) && this.cellMatches(bot, cell))
       .map(cell => bot.blockAt(cell.position))
-      .find(block => bot.canDigBlock(block) && bot.canSeeBlock(block))
-    if (!blocker || !work.ready() || !await work.dig(blocker)) return false
-    this.scan(bot)
-    this.save()
-    work.log('starter hut reopened roof access', { position: blocker.position })
-    return true
+      .filter(block => bot.canDigBlock(block))
+    for (const blocker of blockers) {
+      if (!work.ready()) return false
+      if (!await work.dig(blocker)) continue
+      this.scan(bot)
+      this.save()
+      work.log('starter hut reopened roof access', { position: blocker.position })
+      return true
+    }
+    return false
   }
 
   async clearHutEntrance(bot, work) {
