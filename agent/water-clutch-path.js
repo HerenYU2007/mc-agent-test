@@ -2,7 +2,7 @@ const Move = require('mineflayer-pathfinder/lib/move')
 const { Vec3 } = require('vec3')
 const { bucketAvailable, supportsClutch, MIN_FALL_DISTANCE, OPEN } = require('./water-clutch')
 
-const MAX_CLUTCH_DROP = 10
+const MAX_CLUTCH_DROP = 50
 const SEARCH_BUDGET = 50
 
 function dropColumnLanding(bot, column) {
