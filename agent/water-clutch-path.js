@@ -68,6 +68,12 @@ async function executeClutchStep(bot, step, { canStart, recoveredAt }, deadline)
     const current = findClutchDrop(bot, step.edge, step.direction)
     return current?.landing.equals(step.landing) && current.alternateLanding.equals(step.alternateLanding)
   }
+  // Pathfinder can finish the approach while the Bot is still descending onto the edge block.
+  for (let ticks = 0; ticks < 6 && !bot.entity.onGround; ticks++) {
+    if (!canStart() || !bot.entity.position.floored().equals(step.edge) ||
+        deadline - Date.now() < clutchTimeBudget(step.height)) return false
+    await bot.waitForTicks(1)
+  }
   if (!ready()) return false
   if (!offhand() && bot.heldItem?.name !== 'water_bucket') {
     const bucket = bot.inventory.items().find(item => item.name === 'water_bucket')
