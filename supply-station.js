@@ -29,8 +29,13 @@ class StationPlacementGoal extends goals.GoalPlaceBlock {
       if (!solidGround(bot.blockAt(reference))) return [center]
       const across = face.x ? new Vec3(0, 0.3, 0) : new Vec3(0.3, 0, 0)
       const along = face.z ? new Vec3(0, 0.3, 0) : new Vec3(0, 0, 0.3)
-      return [center, ...[across, across.scaled(-1), ...(cell.half ? [] : [along, along.scaled(-1)])]
-        .map(offset => [face, point.plus(offset), reference])]
+      const offsets = [across, across.scaled(-1)]
+      if (face.y) {
+        // The adjacent wall blocks can hide the center of a corner's top face.
+        offsets.push(along, along.scaled(-1))
+        for (const x of [-0.38, 0.38]) for (const z of [-0.38, 0.38]) offsets.push(new Vec3(x, 0, z))
+      } else if (!cell.half) offsets.push(along, along.scaled(-1))
+      return [center, ...offsets.map(offset => [face, point.plus(offset), reference])]
     })
   }
 
@@ -263,7 +268,9 @@ class SupplyStation {
       this.glassPrepared = true
       this.save()
     }
-    if (this.resumePending || !bot.blockAt(center)) {
+    const needsReturn = !bot.blockAt(center) ||
+      (this.resumePending && (!this.hut || bot.entity.position.distanceTo(center) > 9))
+    if (needsReturn) {
       this.phase = '返回工地'
       if (!await work.walk(new goals.GoalNear(entry.x, entry.y, entry.z, 1), 16000) || !work.ready()) return
     }
@@ -335,13 +342,20 @@ class SupplyStation {
         } else if (this.roofStep && !await this.removeRoofStep(bot, work)) return
       }
       const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0)
+      const topWall = this.hut && phase === '墙体第 3 层'
       const nearby = candidates.filter(cell => (this.failedCells.get(cell.position.toString()) ?? 0) <= Date.now())
         .map(cell => {
-          const goal = new StationPlacementGoal(bot, cell)
-          return { cell, goal, reachable: Boolean(goal.hitFrom(bot)) }
+          const corner = topWall && roofCorner(cell)
+          const goal = new StationPlacementGoal(bot, corner ? { ...cell, baseOnly: false } : cell)
+          return { cell, goal, corner, reachable: Boolean(goal.hitFrom(bot)) }
         }).filter(({ goal }) => goal.facesPos.length > 0)
       nearby.sort((a, b) => Number(b.reachable) - Number(a.reachable) ||
+        Number(b.corner) - Number(a.corner) ||
         a.cell.position.distanceTo(eye) - b.cell.position.distanceTo(eye))
+      if (topWall && !nearby.some(cell => cell.reachable)) {
+        const corner = nearby.find(cell => cell.corner)?.cell
+        if (corner && await this.openRoofCorner(bot, work, corner)) return
+      }
       let progress = false
       for (const { cell, goal } of nearby.slice(0, 5)) {
         if (!work.ready()) break
@@ -461,7 +475,7 @@ class SupplyStation {
       if (!await work.dig(block) || !work.ready()) return false
       this.scan(bot)
       this.save()
-      work.log('supply station roof access opened', { corner: position, temporarilyRemoved: side })
+      work.log('supply station corner access opened', { phase: corner.phase, corner: position, temporarilyRemoved: side })
       return true
     }
     return false
