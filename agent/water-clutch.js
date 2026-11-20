@@ -63,12 +63,16 @@ function createWaterClutch(runtimeState, features) {
   const lastRecovered = new WeakMap()
   const nextRefill = new WeakMap()
 
+  function hasEmptyTravelBucket(bot) {
+    return Boolean(bot?.inventory && (nextRefill.get(bot) ?? 0) <= Date.now() &&
+      bucketAvailable(bot, 'bucket') && !bucketAvailable(bot, 'water_bucket'))
+  }
+
   async function tryFillTravelBucket(bot) {
     const safe = () => features.canWorkHere(bot) && bot.game?.gameMode === 'survival' &&
       !bot.game.dimension.includes('nether') && bot.entity.onGround && !bot.entity.isInWater &&
       !features.foodRecoveryNeeded() && !features.closeCombatPlan() && !bot.pathfinder.goal
-    if (!safe() || !bucketAvailable(bot, 'bucket') || bucketAvailable(bot, 'water_bucket') ||
-        (nextRefill.get(bot) ?? 0) > Date.now()) return false
+    if (!safe() || !hasEmptyTravelBucket(bot)) return false
     nextRefill.set(bot, Date.now() + 20000)
     const sources = bot.findBlocks({ matching: block => isWaterSource(block) &&
       !runtimeState.supplyBase.owns(bot, block.position), maxDistance: 8, count: 12 })
@@ -80,7 +84,7 @@ function createWaterClutch(runtimeState, features) {
         const stands = new Map()
         for (const water of sources) {
           for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            for (const dy of [0, 1, 2]) {
+            for (const dy of [0, 1, 2, 3]) {
               const feet = water.offset(dx, dy, dz)
               if (feet.distanceTo(origin) > 8 || !OPEN.has(bot.blockAt(feet)?.name) ||
                   !OPEN.has(bot.blockAt(feet.offset(0, 1, 0))?.name) ||
@@ -239,7 +243,7 @@ function createWaterClutch(runtimeState, features) {
     bot.once('end', reset)
   }
 
-  return { trackWaterClutch, tryFillTravelBucket, waterClutchRecoveredAt: bot => lastRecovered.get(bot),
+  return { trackWaterClutch, hasEmptyTravelBucket, tryFillTravelBucket, waterClutchRecoveredAt: bot => lastRecovered.get(bot),
     isWaterClutchActive: (bot = runtimeState.bot) => active.has(bot) }
 }
 

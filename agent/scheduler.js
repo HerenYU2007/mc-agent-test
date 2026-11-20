@@ -119,6 +119,18 @@ function createScheduler(runtimeState, features) {
         }
       }
     }
+    if (!immediate && !runtimeState.busy && !runtimeState.mineBusy && !runtimeState.isSmelting &&
+        !runtimeState.isEating && !runtimeState.isDiggingBlock && !runtimeState.bot?.targetDigBlock &&
+        !runtimeState.shelteredUntilDawn && !runtimeState.emergencyShelteredUntil && !features.deathRecoveryDue() &&
+        !runtimeState.fleeingActive && Date.now() >= runtimeState.retreatUntil &&
+        features.hasEmptyTravelBucket(runtimeState.bot)) {
+      runtimeState.busy = true
+      try {
+        if (await features.tryFillTravelBucket(runtimeState.bot)) return
+      } finally {
+        runtimeState.busy = false
+      }
+    }
     if (runtimeState.mineMode && !immediate) {
       const hasPickaxe = runtimeState.bot.inventory.items().some(item => item.name.endsWith('_pickaxe'))
       if (hasPickaxe) {
@@ -283,7 +295,6 @@ function createScheduler(runtimeState, features) {
       await features.clearBackpack(runtimeState.bot, 'routine')
       if (!runtimeState.bot?.entity || runtimeState.bot.health <= 0) return
       await features.autoEquipArmor()
-      if (!immediate && await features.tryFillTravelBucket(runtimeState.bot)) return
       if (!immediate && !features.closeCombatPlan() && runtimeState.supplyStation.pending) {
         await features.buildSupplyStation()
         return

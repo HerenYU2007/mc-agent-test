@@ -105,17 +105,19 @@ function createNavigation(runtimeState, features) {
     }
   }
 
-  async function gotoWithTimeout(goal, label, timeoutMs, { allowClutch = true } = {}) {
+  async function gotoWithTimeout(goal, label, timeoutMs, { allowClutch } = {}) {
     if (features.waterOwnsMovement()) throw new Error('movement paused until the bot reaches dry ground')
     const connection = runtimeState.bot
+    const movements = connection.pathfinder.movements
+    const clutchEnabled = allowClutch ?? movements === runtimeState.movements
     const deadline = Date.now() + timeoutMs
     const canStart = () => runtimeState.bot === connection && runtimeState.botEnabled && connection.entity &&
       connection.health >= 10 && !connection.entity.isInWater && !connection.pathfinder.goal &&
+      connection.pathfinder.movements === movements &&
       !runtimeState.fleeingActive && !runtimeState.emergencyRetreating && !features.isWaterClutchActive(connection) &&
       !features.closeCombatPlan()
-    while (allowClutch && deadline - Date.now() > 3000 && canStart() &&
-        connection.pathfinder.movements === runtimeState.movements) {
-      const step = planClutchStep(connection, goal, runtimeState.movements)
+    while (clutchEnabled && deadline - Date.now() > 3000 && canStart()) {
+      const step = planClutchStep(connection, goal, movements)
       if (!step) break
       const { edge, landing } = step
       if (!connection.entity.position.floored().equals(edge)) {

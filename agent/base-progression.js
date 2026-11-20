@@ -72,7 +72,7 @@ function createBaseProgression(runtimeState, features) {
       walking.maxDropDown = 2
       walking.scafoldingBlocks = []
       connection.pathfinder.setMovements(walking)
-      try { await api.goto(goal, label, timeout) }
+      try { await api.goto(goal, label, timeout, { allowClutch: true }) }
       finally {
         if (connection === runtimeState.bot) {
           if (connection.pathfinder.goal === goal) connection.pathfinder.setGoal(null)
