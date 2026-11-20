@@ -89,8 +89,11 @@ function createEquipment(runtimeState, features) {
     const diamond = gearUpgrades('diamond')
     const iron = gearUpgrades('iron')
     const diamondPick = diamond.find(plan => plan.type === 'pickaxe')
-    const candidates = [diamondPick, ...iron.filter(plan => plan.type === 'pickaxe' || plan.type === 'shield'),
-      ...(diamondPick ? [] : diamond), ...iron.filter(plan => plan.type !== 'pickaxe' && plan.type !== 'shield')]
+    const ironPick = iron.find(plan => plan.type === 'pickaxe')
+    // Leave the first three ingots available for the pickaxe across separate smelt batches.
+    const priorityIron = ironPick ? [ironPick] : iron
+    const candidates = [diamondPick, ...priorityIron.filter(plan => plan.type === 'pickaxe' || plan.type === 'shield'),
+      ...(diamondPick ? [] : diamond), ...priorityIron.filter(plan => plan.type !== 'pickaxe' && plan.type !== 'shield')]
       .filter(plan => plan && features.inventoryItemCount(plan.resource) >= plan.cost)
     if (!candidates.length) return []
     const tablePlanks = features.inventoryItemCount(TABLE_NAME) > 0 || features.findNearestBlock(TABLE_NAMES, 4) ? 0 : 4

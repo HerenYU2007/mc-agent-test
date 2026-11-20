@@ -234,6 +234,10 @@ function createMining(runtimeState, features) {
       void features.decideAndAct('mine-complete')
       return false
     }
+    if (!['base', 'station'].includes(runtimeState.currentMineOrder?.source) && finishMineObjective()) {
+      void features.decideAndAct('mine-complete')
+      return false
+    }
     if (Date.now() < nextMineSearchAt) return false
     if (!['base', 'station'].includes(runtimeState.currentMineOrder?.source) &&
         Date.now() >= runtimeState.nextGearCraftRetryAt && features.readyGearUpgrades().length && !features.closeCombatPlan()) {
@@ -249,10 +253,16 @@ function createMining(runtimeState, features) {
       await features.clearBackpack(runtimeState.bot, 'mining', { duringMining: true })
       if (!runtimeState.bot?.entity || !runtimeState.mineMode || features.foodRecoveryNeeded() || features.closeCombatPlan()) return false
       await features.autoEquipArmor(true)
-      const hasPickaxe = runtimeState.bot.inventory.items().some(item => item.name.endsWith('_pickaxe'))
-      if (!hasPickaxe) {
-        features.log('mine planner paused; pickaxe required')
+      const pickaxes = runtimeState.bot.inventory.items().filter(item => item.name.endsWith('_pickaxe'))
+      const hasHarvestTool = pickaxes.length > 0 && [...runtimeState.mineTargetNames].some(name => {
+        const required = runtimeState.mcData.blocksByName[name]?.harvestTools
+        return !required || pickaxes.some(item => required[item.type])
+      })
+      if (!hasHarvestTool) {
+        features.log('mine planner paused; suitable pickaxe required', { targets: [...runtimeState.mineTargetNames] })
         runtimeState.mineMode = false
+        runtimeState.activeGoal = null
+        runtimeState.committedMineTarget = null
         objectiveReached = true
         return false
       }
