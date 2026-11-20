@@ -5,13 +5,13 @@ const { goals } = require('mineflayer-pathfinder')
 const { readStructureNbt } = require('./structure-nbt')
 const { HUT_ID, HUT_SIZE, hutBlueprint, hutItem, hutBlockMatches,
   hutEntrance, loadHutSchematic } = require('./starter-hut')
+const { runBuildPass, visibleBuildFace, placeBuildBlock } = require('./agent/creative-build')
 
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const CLEARABLE = new Set(['short_grass', 'tall_grass', 'fern', 'large_fern', 'bush', 'dead_bush', 'snow'])
 const ENTRANCES = [new Vec3(0, 0, -1), new Vec3(0, 0, 1), new Vec3(-1, 0, 0), new Vec3(1, 0, 0)]
 const UP = new Vec3(0, 1, 0)
 const PLANK = 'planks'
-const INTERACTIVE_SUPPORT = new Set(['chest', 'furnace', 'crafting_table'])
 const STATION_SIZE = [5, 4, 5]
 
 class StationPlacementGoal extends goals.GoalPlaceBlock {
@@ -29,13 +29,25 @@ class StationPlacementGoal extends goals.GoalPlaceBlock {
       if (!solidGround(bot.blockAt(reference))) return [center]
       const across = face.x ? new Vec3(0, 0.3, 0) : new Vec3(0.3, 0, 0)
       const along = face.z ? new Vec3(0, 0.3, 0) : new Vec3(0, 0, 0.3)
-      return [center, ...[across, across.scaled(-1), ...(cell.half ? [] : [along, along.scaled(-1)])]
-        .map(offset => [face, point.plus(offset), reference])]
+      const offsets = [across, across.scaled(-1)]
+      if (face.y) {
+        offsets.push(along, along.scaled(-1))
+        for (const x of [-0.38, 0.38]) for (const z of [-0.38, 0.38]) offsets.push(new Vec3(x, 0, z))
+      } else if (!cell.half) offsets.push(along, along.scaled(-1))
+      return [center, ...offsets.map(offset => [face, point.plus(offset), reference])]
     })
+    this.bot = bot
   }
 
   isEnd(node) {
     return !this.unusableFeet?.equals(node) && super.isEnd(node)
+  }
+
+  getFaceAndRef(eye) {
+    for (const [face, to, ref] of this.facesPos) {
+      if (visibleBuildFace(this.bot, eye, to, face.scaled(-1), ref, this.options.range)) return { face, to, ref }
+    }
+    return null
   }
 
   hitFrom(bot) {
@@ -198,7 +210,17 @@ class SupplyStation {
   }
 
   cellsForSite() {
-    if (this.hut) return hutBlueprint(this.site)
+    if (this.hut) {
+      const cells = hutBlueprint(this.site)
+      if (!this.hutSchematic) return cells
+      const { center, front } = this.site
+      const right = new Vec3(front.z, 0, -front.x)
+      return cells.map(cell => {
+        const offset = cell.position.minus(center)
+        const preferred = this.hutSchematic.materials.get([offset.dot(right), offset.y, offset.dot(front)].join())
+        return preferred ? { ...cell, preferred } : cell
+      })
+    }
     if (!this.schematic) return blueprint(this.site)
     const { center, supports } = this.site
     const origin = center.offset(-Math.floor(this.size[0] / 2), 0, -Math.floor(this.size[2] / 2))
@@ -263,7 +285,7 @@ class SupplyStation {
       this.glassPrepared = true
       this.save()
     }
-    if (this.resumePending || !bot.blockAt(center)) {
+    if (!bot.blockAt(center) || (this.resumePending && (!this.hut || bot.entity.position.distanceTo(center) > 9))) {
       this.phase = '返回工地'
       if (!await work.walk(new goals.GoalNear(entry.x, entry.y, entry.z, 1), 16000) || !work.ready()) return
     }
@@ -323,7 +345,12 @@ class SupplyStation {
         if (phase === '屋顶中格' && this.roofStep && !await this.removeHutPlatform(bot, work)) return
         if ((phase === '屋顶中格' || phase === '室内照明') && !bot.entity.position.floored().equals(center) &&
             (!await work.walk(new goals.GoalBlock(center.x, center.y, center.z), 6500) || !work.ready())) return
-        if (phase === '门' && !this.spawnSet && !await this.setHutSpawn(bot, work)) return
+        if (phase === '门' && !this.spawnSet) {
+          if (work.enterHut) {
+            if (!bot.entity.position.floored().equals(center) &&
+                (!await work.walk(new goals.GoalBlock(center.x, center.y, center.z), 6500) || !work.ready())) return
+          } else if (!await this.setHutSpawn(bot, work)) return
+        }
       } else if (phase === '屋顶') {
         const rim = candidates.filter(outerRoof)
         if (rim.length && roofStepNeeded()) {
@@ -335,28 +362,37 @@ class SupplyStation {
         } else if (this.roofStep && !await this.removeRoofStep(bot, work)) return
       }
       const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0)
+      const topWall = this.hut && phase === '墙体第 3 层'
+      const prioritizeCorner = topWall || (this.hut && phase === '屋顶')
       const nearby = candidates.filter(cell => (this.failedCells.get(cell.position.toString()) ?? 0) <= Date.now())
         .map(cell => {
-          const goal = new StationPlacementGoal(bot, cell)
-          return { cell, goal, reachable: Boolean(goal.hitFrom(bot)) }
+          const corner = prioritizeCorner && roofCorner(cell)
+          const goal = new StationPlacementGoal(bot, topWall && corner ? { ...cell, baseOnly: false } : cell)
+          return { cell, goal, corner, reachable: Boolean(goal.hitFrom(bot)) }
         }).filter(({ goal }) => goal.facesPos.length > 0)
       nearby.sort((a, b) => Number(b.reachable) - Number(a.reachable) ||
+        Number(b.corner) - Number(a.corner) ||
         a.cell.position.distanceTo(eye) - b.cell.position.distanceTo(eye))
-      let progress = false
-      for (const { cell, goal } of nearby.slice(0, 5)) {
-        if (!work.ready()) break
-        const confirmed = await this.place(bot, work, cell, goal)
-        if (!work.ready()) return
-        if (confirmed) {
+      if (topWall && !nearby.some(candidate => candidate.reachable)) {
+        const blockedCorner = nearby.find(candidate => candidate.corner)?.cell
+        if (blockedCorner && await this.openRoofCorner(bot, work, blockedCorner)) return
+      }
+      const { advanced } = await runBuildPass(nearby.slice(0, 5), async ({ cell, goal }) =>
+        await this.place(bot, work, cell, goal) ? 'placed' : 'deferred', {
+        ready: work.ready,
+        limit: 1,
+        onResult: ({ cell }, result) => {
+          if (!work.ready()) return
+          if (result !== 'placed') {
+            this.failedCells.set(cell.position.toString(), Date.now() + 7000)
+            return
+          }
           this.scan(bot)
           this.save()
           work.log('supply station block placed', { ...this.status(), block: bot.blockAt(cell.position)?.name, position: cell.position })
-          progress = true
-          break
-        }
-        this.failedCells.set(cell.position.toString(), Date.now() + 7000)
-      }
-      if (!progress) return
+        },
+      })
+      if (!advanced) return
     }
   }
 
@@ -398,12 +434,18 @@ class SupplyStation {
   }
 
   async removeHutPlatform(bot, work) {
-    const { x, y, z } = this.site.entry
-    if (!await work.walk(new goals.GoalBlock(x, y, z), 6500) || !work.ready()) return false
     const [step, base, top] = this.hutPlatform()
-    for (const position of [top, step, base]) {
-      const block = bot.blockAt(position)
-      if (matches(block?.name, PLANK) && (!bot.canDigBlock(block) || !bot.canSeeBlock(block) || !await work.dig(block))) return false
+    for (const position of [top, base, step]) {
+      let block = bot.blockAt(position)
+      if (!matches(block?.name, PLANK)) continue
+      if (!bot.canDigBlock(block) || !bot.canSeeBlock(block)) {
+        const goal = new goals.GoalLookAtBlock(position, bot.world, { reach: 4 })
+        if (!await work.walk(goal, 5500) || !work.ready()) return false
+        block = bot.blockAt(position)
+      }
+      if (!matches(block?.name, PLANK) || !bot.canDigBlock(block) || !bot.canSeeBlock(block) ||
+          !work.ready() || !await work.dig(block) || !AIR.has(bot.blockAt(position)?.name)) return false
+      await bot.waitForTicks(6)
     }
     this.roofStep = false
     this.save()
@@ -415,7 +457,9 @@ class SupplyStation {
     const bed = bot.blockAt(position)
     if (!bed?.name.endsWith('_bed')) return false
     const { x, y, z } = this.site.center
-    if (!await work.walk(new goals.GoalBlock(x, y, z), 6000) || !work.ready()) return false
+    if (work.enterHut && !await work.enterHut()) return false
+    if (!bot.entity.position.floored().equals(this.site.center) &&
+        (!await work.walk(new goals.GoalBlock(x, y, z), 6000) || !work.ready())) return false
     let confirmed = false
     const message = packet => {
       if (JSON.stringify(packet?.json ?? packet).includes('block.minecraft.set_spawn') ||
@@ -461,7 +505,7 @@ class SupplyStation {
       if (!await work.dig(block) || !work.ready()) return false
       this.scan(bot)
       this.save()
-      work.log('supply station roof access opened', { corner: position, temporarilyRemoved: side })
+      work.log('supply station corner access opened', { phase: corner.phase, corner: position, temporarilyRemoved: side })
       return true
     }
     return false
@@ -507,30 +551,23 @@ class SupplyStation {
       if (!bot.canDigBlock(pairedPlant) || !bot.canSeeBlock(pairedPlant)) return false
       await bot.dig(pairedPlant, true)
     }
-    const item = bot.inventory.items().find(item => this.hut ? hutItem(item.name, block) : matches(item.name, block))
+    const items = bot.inventory.items()
+    const item = items.find(item => item.name === cell.preferred && hutItem(item.name, block)) ??
+      items.find(item => this.hut ? hutItem(item.name, block) : matches(item.name, block))
     const support = bot.blockAt(target.ref)
     if (!item || !support || !work.ready() || !AIR.has(bot.blockAt(position)?.name)) return false
     await bot.equip(item, 'hand')
     if (!work.ready() || !AIR.has(bot.blockAt(position)?.name) || (cell.pair && !AIR.has(bot.blockAt(cell.pair)?.name))) return false
-    const sneak = INTERACTIVE_SUPPORT.has(support.name)
     try {
-      if (sneak) bot.setControlState('sneak', true)
-      if (cell.look) {
-        await bot.lookAt(bot.entity.position.offset(cell.look.x * 4, bot.entity.eyeHeight ?? 1.62, cell.look.z * 4), true)
-        await bot.waitForTicks(1)
-      }
-      if (!work.ready()) return false
-      await bot._placeBlockWithOptions(support, target.face.scaled(-1), {
-        delta: target.to.minus(target.ref), forceLook: cell.look ? 'ignore' : true, swingArm: 'right',
+      const result = await placeBuildBlock(bot, { support, face: target.face.scaled(-1), delta: target.to.minus(target.ref) }, {
+        look: cell.look, ready: work.ready, confirm: () => this.cellMatches(bot, cell),
       })
+      if (result === 'placement-rejected') work.log('supply station placement retry', { position, block, message: result })
     } catch (error) {
       if (!this.cellMatches(bot, cell)) {
         work.log('supply station placement retry', { position, block, message: error.message })
       }
-    } finally {
-      if (sneak) bot.setControlState('sneak', false)
     }
-    if (cell.pair && work.ready()) await bot.waitForTicks(2)
     return work.ready() && this.cellMatches(bot, cell)
   }
 

@@ -8,7 +8,7 @@ const FACES = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(0, 0, -1),
 const FACE_PRIORITY = [1, 5, 3, 4, 2, 0]
 const FACING = { north: 2, south: 3, west: 4, east: 5 }
 const AIR = new Set(['air', 'cave_air', 'void_air'])
-const INTERACTIVE = /(?:chest|barrel|furnace|hopper|beacon|anvil|crafting_table|trapped_chest|shulker_box)$/
+const INTERACTIVE = /(?:chest|barrel|furnace|hopper|beacon|anvil|crafting_table|shulker_box|_door|_trapdoor|_fence_gate|_bed)$/
 const DETAIL = /(?:snow|torch|lantern|grass|water|coral|scaffolding)$/
 const REACH = 4.65
 
@@ -33,6 +33,14 @@ function placementFaces(cell) {
   return FACE_PRIORITY.filter(face => !cell.properties.axis || FACES[face][cell.properties.axis])
 }
 
+function visibleBuildFace(bot, eye, point, face, reference, range = REACH) {
+  const direction = point.minus(eye)
+  const length = direction.norm()
+  if (length < 0.01 || length > range || direction.dot(face) >= 0) return false
+  const hit = bot.world.raycast(eye, direction.scaled(1 / length), length + 0.08)
+  return hit?.position.equals(reference) && FACES[hit.face]?.equals(face)
+}
+
 function clickPoint(bot, cell) {
   const eye = bot.entity.position.offset(0, bot.entity.eyeHeight || 1.62, 0)
   for (const faceId of placementFaces(cell)) {
@@ -46,14 +54,45 @@ function clickPoint(bot, cell) {
           axis === 'y' && cell.properties.half === 'bottom' ? 0.25 : 0.5
         return shape[index] + fraction * (shape[index + 3] - shape[index])
       }))
-      const direction = support.position.plus(delta).minus(eye)
-      const length = direction.norm()
-      if (length < 0.01 || length > REACH || direction.dot(face) >= 0) continue
-      const hit = bot.world.raycast(eye, direction.scaled(1 / length), length + 0.08)
-      if (hit?.position.equals(support.position) && hit.face === faceId) return { support, face, delta }
+      if (visibleBuildFace(bot, eye, support.position.plus(delta), face, support.position)) return { support, face, delta }
     }
   }
   return null
+}
+
+async function placeBuildBlock(bot, { support, face, delta }, { confirm, look, ready = () => true, signal } = {}) {
+  const sneak = INTERACTIVE.test(support.name)
+  if (sneak) bot.setControlState('sneak', true)
+  try {
+    if (sneak) await wait(50, undefined, { signal })
+    if (look) {
+      await bot.lookAt(bot.entity.position.offset(look.x * 4, bot.entity.eyeHeight ?? 1.62, look.z * 4), true)
+      await wait(50, undefined, { signal })
+    }
+    if (!ready()) return 'interrupted'
+    signal?.throwIfAborted()
+    await bot._genericPlace(support, face, { delta, swingArm: 'right', forceLook: look ? 'ignore' : true })
+    for (let tick = 0; tick < 7 && ready(); tick++) {
+      if (confirm()) return 'placed'
+      await wait(50, undefined, { signal })
+    }
+    return ready() ? 'placement-rejected' : 'interrupted'
+  } finally {
+    if (sneak) bot.setControlState('sneak', false)
+  }
+}
+
+async function runBuildPass(entries, place, { ready = () => true, limit = Infinity, onResult } = {}) {
+  const deferred = []
+  let advanced = 0
+  for (const cell of entries) {
+    if (!ready() || advanced >= limit) break
+    const result = await place(cell)
+    if (result === 'placed' || result === 'existing') advanced++
+    else deferred.push({ cell, reason: result })
+    onResult?.(cell, result)
+  }
+  return { advanced, deferred }
 }
 
 function emptyBody(bot, position) {
@@ -221,36 +260,25 @@ async function runCreativeBuild(bot, blueprint, origin, { replaceExisting = fals
     current = bot.blockAt(cell.position)
     if (matches(current, cell)) return 'existing'
     if (current && !AIR.has(current.name)) return 'existing-block'
-    const sneak = INTERACTIVE.test(click.support.name)
-    if (sneak) bot.setControlState('sneak', true)
-    try {
-      if (sneak) await wait(50, undefined, { signal })
-      await bot._genericPlace(click.support, click.face, { delta: click.delta, swingArm: 'right', forceLook: true })
-      summary.attempts++
-      for (let tick = 0; tick < 6; tick++) {
-        const actual = bot.blockAt(cell.position)
-        if (matches(actual, cell)) return 'placed'
-        await wait(50, undefined, { signal })
-      }
-      const actual = bot.blockAt(cell.position)
-      if (actual?.name === cell.block) observed.set(keyFor(cell), actual.stateId)
-      return actual && !AIR.has(actual.name) ? 'placement-state-mismatch' : 'placement-rejected'
-    } finally {
-      if (sneak) bot.setControlState('sneak', false)
-    }
+    summary.attempts++
+    const result = await placeBuildBlock(bot, click, { signal, confirm: () => matches(bot.blockAt(cell.position), cell) })
+    if (result === 'placed') return result
+    const actual = bot.blockAt(cell.position)
+    if (actual?.name === cell.block) observed.set(keyFor(cell), actual.stateId)
+    return actual && !AIR.has(actual.name) ? 'placement-state-mismatch' : result
   }
 
   async function pass(entries, retry) {
-    const remaining = []
-    for (const cell of entries) {
-      const result = await place(cell, retry)
-      if (result === 'placed' || result === 'existing') {
-        summary[result]++
-        summary.pending--
-      } else remaining.push({ cell, reason: result })
-      report(summary.pending, cell)
-    }
-    return remaining
+    const { deferred } = await runBuildPass(entries, cell => place(cell, retry), {
+      onResult: (cell, result) => {
+        if (result === 'placed' || result === 'existing') {
+          summary[result]++
+          summary.pending--
+        }
+        report(summary.pending, cell)
+      },
+    })
+    return deferred
   }
 
   bot.creative.startFlying()
@@ -266,4 +294,5 @@ async function runCreativeBuild(bot, blueprint, origin, { replaceExisting = fals
   }
 }
 
-module.exports = { runCreativeBuild, orderCells, matches, clickPoint, encodeBlockState }
+module.exports = { runCreativeBuild, orderCells, matches, clickPoint, encodeBlockState,
+  runBuildPass, visibleBuildFace, placeBuildBlock }

@@ -139,6 +139,7 @@ function createExpeditionShelter(api, persist) {
     if (station.completed) return 'ready'
     await api.buildShelter(station, {
       siteOrigin: base,
+      enterHut: () => enter(connection, state),
       allowSite: site => {
         const { center, entry } = site
         if (entry.y !== center.y) return false

@@ -82,7 +82,7 @@ function createConstruction(runtimeState, features) {
       (block === 'planks' ? features.plankCount() : features.inventoryItemCount(block)) >= count)
   }
 
-  async function buildSupplyStation(station = runtimeState.supplyStation, { siteOrigin, allowSite } = {}) {
+  async function buildSupplyStation(station = runtimeState.supplyStation, { siteOrigin, allowSite, enterHut } = {}) {
     const connection = runtimeState.bot
     const ready = () => features.canWorkHere(connection) && !features.foodRecoveryNeeded(connection) &&
       !features.closeCombatPlan() && !features.damageInterruptActive(connection) && Date.now() >= runtimeState.retreatUntil
@@ -164,7 +164,7 @@ function createConstruction(runtimeState, features) {
       protected: position => station.protects(connection, position) || runtimeState.supplyBase.owns(connection, position),
     }
     try {
-      await Promise.race([connectionEnded, station.step(connection, { ready, walk, log: features.log, explore: features.exploreOneStep, siteOrigin, allowSite,
+      await Promise.race([connectionEnded, station.step(connection, { ready, walk, log: features.log, explore: features.exploreOneStep, siteOrigin, allowSite, enterHut,
         prepareGlass: count => prepareHutGlass(connection, count, hutWork, features),
         materials: async (materials, hutSite) => {
           const remaining = hutSite ? await starterHutMaterials(connection, materials, hutWork, features) : materials

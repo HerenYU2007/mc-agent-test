@@ -90,6 +90,7 @@ function loadHutSchematic(filename) {
   }
   const clearance = hutEntrance(site)
   const heights = []
+  const materials = new Map()
   const { cells } = readLitematic(filename, { includeAir: true, maxVolume: 5 * 4 * 6 })
   for (const { pos, block, properties } of cells) {
     if (block === 'air') {
@@ -106,13 +107,14 @@ function loadHutSchematic(filename) {
         (cell.block === MATERIAL.bed && properties.part !== (cell.pairedHalf ? 'head' : 'foot'))) {
       throw new Error(`生存小屋蓝图中方块与施工模板不一致 ${pos} ${block}`)
     }
+    materials.set(pos.join(), block)
     positions.delete(pos.join())
   }
   if (positions.size || !heights.includes(0) || !heights.includes(1)) {
     throw new Error('生存小屋蓝图缺少结构方块或两格入口净空')
   }
   const id = createHash('sha256').update(fs.readFileSync(filename)).digest('hex')
-  return { id, heights: heights.sort((a, b) => a - b) }
+  return { id, heights: heights.sort((a, b) => a - b), materials }
 }
 
 module.exports = { HUT_ID, HUT_SIZE, hutBlueprint, hutItem, hutBlockMatches, hutEntrance, loadHutSchematic }
