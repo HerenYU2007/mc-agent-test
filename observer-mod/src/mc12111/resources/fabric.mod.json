@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "nmo-agent-observer",
+  "version": "0.1.0+1.21.11",
+  "name": "NMO Agent Observer",
+  "description": "Displays the Agent's telemetry and planned path in Minecraft Java 1.21.11.",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.nmo.agentobserver.AgentObserver12111"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "fabric-api": "*",
+    "minecraft": "1.21.11",
+    "java": ">=21"
+  }
+}
