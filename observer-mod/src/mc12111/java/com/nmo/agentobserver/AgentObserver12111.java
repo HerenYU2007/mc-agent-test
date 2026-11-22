@@ -11,22 +11,40 @@ import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.FormattedCharSequence;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.item.ItemStack;
 
 public final class AgentObserver12111 implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         ObserverTelemetry.start();
-        ClientTickEvents.END_CLIENT_TICK.register(client ->
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (client.player != null) applyNightVision(client.player);
             ObserverHudLayout.updateDetailsKey(client.level != null && client.screen == null
-                && InputConstants.isKeyDown(client.getWindow(), GLFW.GLFW_KEY_K)));
+                && InputConstants.isKeyDown(client.getWindow(), GLFW.GLFW_KEY_K));
+        });
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("nmo-agent-observer", "telemetry"),
             (graphics, delta) -> renderHud(Minecraft.getInstance(), graphics));
         ObserverPath12111 path = new ObserverPath12111();
         WorldRenderEvents.END_MAIN.register(path::render);
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> path.close());
+    }
+
+    private static void applyNightVision(LocalPlayer player) {
+        // CatEyes applies the vanilla effect to the local player. Refresh it if a world change
+        // or a server effect update replaces it.
+        MobEffectInstance effect = player.getEffect(MobEffects.NIGHT_VISION);
+        if (effect == null || !effect.isInfiniteDuration()) {
+            int amplifier = effect == null ? 0 : effect.getAmplifier();
+            player.addEffect(new MobEffectInstance(MobEffects.NIGHT_VISION, MobEffectInstance.INFINITE_DURATION,
+                amplifier, false, false, false));
+        }
+        player.removeEffect(MobEffects.DARKNESS);
+        player.removeEffect(MobEffects.BLINDNESS);
     }
 
     private static void renderHud(Minecraft client, GuiGraphics gui) {
