@@ -1,8 +1,9 @@
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
-const { STONE_DROPS, FURNACE_NAME, TABLE_TOP, IRON_INPUT_NAMES, IRON_FUEL_NAMES } = require('./config')
+const { STONE_DROPS, FURNACE_NAME, TABLE_TOP, IRON_INPUT_NAMES, IRON_FUEL_NAMES, EMPTY_BLOCK } = require('./config')
 
 const FURNACE_NAMES = new Set([FURNACE_NAME])
+const FURNACE_PICKUP_LIMIT = 2
 
 function createSmelting(runtimeState, features) {
   async function ensureFurnace(stations = null) {
@@ -33,7 +34,7 @@ function createSmelting(runtimeState, features) {
 
     const base = connection.entity.position.floored()
     const spots = []
-    for (const y of [0, -1, 1, -2, 2]) {
+    for (const y of [0, -1, 1]) {
       for (let x = -3; x <= 3; x += 1) {
         for (let z = -3; z <= 3; z += 1) {
           if (x === 0 && z === 0) continue
@@ -41,7 +42,7 @@ function createSmelting(runtimeState, features) {
         }
       }
     }
-    spots.sort((a, b) => a.distanceTo(base) - b.distanceTo(base))
+    spots.sort((a, b) => Math.abs(a.y - base.y) - Math.abs(b.y - base.y) || a.distanceTo(base) - b.distanceTo(base))
     for (const position of spots) {
       if (!features.canWorkHere(connection)) return null
       if (!features.isTableSite(connection, position)) continue
@@ -50,6 +51,7 @@ function createSmelting(runtimeState, features) {
       const eyes = connection.entity.position.offset(0, connection.entity.eyeHeight, 0)
       const ray = hit.minus(eyes)
       if (ray.norm() > 4 || !connection.world.raycast(eyes, ray.unit(), ray.norm())?.position.equals(support.position)) continue
+      if (!isRecoverableFurnaceSite(connection, position, eyes)) continue
       try {
         await connection.equip(held, 'hand')
         if (!features.canWorkHere(connection)) return null
@@ -67,8 +69,18 @@ function createSmelting(runtimeState, features) {
       }
       if (!connection.inventory.items().some(item => item.name === FURNACE_NAME)) return null
     }
-    features.log('furnace placement skipped: no clear spot found')
+    features.log('furnace placement skipped: no reachable, recoverable site')
     return null
+  }
+
+  function isRecoverableFurnaceSite(connection, position, eyes) {
+    if (!EMPTY_BLOCK.test(connection.blockAt(position.offset(0, 1, 0))?.name)) return false
+    const center = position.offset(0.5, 0.5, 0.5).minus(eyes)
+    if (center.norm() > 4 || connection.world.raycast(eyes, center.unit(), center.norm())) return false
+    // Plan to stand on the drop after breaking the furnace, using the existing terrain.
+    const goal = new goals.GoalBlock(position.x, position.y, position.z)
+    const path = connection.pathfinder.getPathTo(runtimeState.movements, goal, 200)
+    return path.status === 'success' && path.path.every(step => !step.toBreak.length && !step.toPlace.length)
   }
 
   async function reclaimTemporaryFurnace(pending = runtimeState.temporaryFurnace) {
@@ -117,8 +129,18 @@ function createSmelting(runtimeState, features) {
         pending.broken = true
       }
       if (!await features.pickUpBlockDrop(FURNACE_NAMES, position, pending.countBefore)) {
-        features.log('furnace pickup pending', { position })
-        return false
+        if (!features.canWorkHere(connection) || furnaceThreat()) return false
+        pending.pickupFailures = (pending.pickupFailures ?? 0) + 1
+        if (pending.pickupFailures < FURNACE_PICKUP_LIMIT) {
+          features.log('furnace pickup pending', { position, attempts: pending.pickupFailures })
+          return false
+        }
+        // Only empty, already-broken fixtures reach this branch. Leave the item in the world.
+        if (runtimeState.temporaryFurnace === pending) runtimeState.temporaryFurnace = null
+        features.log('empty furnace drop unreachable; resuming survival', { position, attempts: pending.pickupFailures })
+        features.persistExperience({ cycle: runtimeState.cycle, action: 'reclaim-furnace-deferred',
+          experience: '空熔炉掉落无法拾取，有限重试后继续生存，避免反复卡在回收任务' })
+        return true
       }
       if (runtimeState.temporaryFurnace === pending) runtimeState.temporaryFurnace = null
       features.log('temporary furnace reclaimed', { position })
