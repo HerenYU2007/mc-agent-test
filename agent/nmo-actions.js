@@ -39,7 +39,7 @@ const recoverable = new Set([
   'occupied',
   'place_failed',
 ])
-function actions(api, memory, save, log) {
+function actions(api, memory, save, log, chooseTarget) {
   let status,
     inventory,
     cooldown = new Map(),
@@ -69,11 +69,25 @@ function actions(api, memory, save, log) {
     if (count(item) <= before) throw Error('合成后未在背包确认 ' + item)
     log('已合成 ' + item + ' × ' + (count(item) - before))
   }
+  async function prioritize(objective, entries, describe) {
+    if (!chooseTarget || entries.length < 2) return entries
+    const origin = here()
+    const health = status.health
+    const options = entries.slice(0, 12).map(describe)
+    const choice = await chooseTarget({ objective, position: origin, health, food: status.food, options })
+    if (choice === undefined) return entries
+    const fresh = await call('status')
+    if (!fresh.ready || fresh.alive === false || fresh.busy || fresh.gamemode !== 'survival' ||
+        fresh.dimension !== status.dimension || fresh.health < health || fresh.nearest_hostile?.dist <= 8 || dist(fresh.pos, origin) > 3) return []
+    if (choice === null || choice === 0) return entries
+    return [entries[choice], ...entries.filter((_, i) => i !== choice)]
+  }
   async function explore(away) {
-    const floor = here(),
-      choices = DELTAS.map((_, i) => DELTAS[(direction + i) % 4])
+    const floor = here()
+    let choices = DELTAS.map((_, i) => DELTAS[(direction + i) % 4])
     direction = (direction + 1) % 4
     if (away) choices.sort((a, b) => dist(add(floor, b), away) - dist(add(floor, a), away))
+    if (!away) choices = await prioritize('explore', choices, direction => ({ direction }))
     for (const v of choices) {
       for (const steps of [8, 4, 2]) {
         const x = floor[0] + steps * v[0],
@@ -90,7 +104,8 @@ function actions(api, memory, save, log) {
           if (AIR.has(below.name) || DANGER.test(below.name) || !AIR.has(feet.name) || !AIR.has(head.name))
             continue
           try {
-            await move(pos, 1)
+            const moved = await move(pos, 1)
+            if (chooseTarget && moved?.pos) log('探索移动至 ' + moved.pos.join(','))
             return true
           } catch (e) {
             if (!recoverable.has(e.code)) throw e
@@ -137,15 +152,16 @@ function actions(api, memory, save, log) {
       selected = tool(kind === 'wood' ? 'axe' : 'pickaxe')
     if (selected) await equip(selected)
     for (const [key, end] of cooldown) if (end <= Date.now()) cooldown.delete(key)
-    const targets = await find(targetNames, kind === 'wood' ? 56 : 32, 40)
+    const found = await find(targetNames, kind === 'wood' ? 56 : 32, 40)
+    const candidates = found.filter(({ pos }) => {
+      if (cooldown.has(pos.join(','))) return false
+      if (pos[0] === before[0] && pos[2] === before[2] && (kind !== 'wood' || pos[1] <= before[1])) return false
+      return kind !== 'wood' || pos[1] <= before[1] + 5
+    })
+    const targets = await prioritize(kind, candidates, ({ name, pos, dist }) => ({ name, pos, distance: dist }))
+    if (candidates.length && !targets.length) return false
     for (const b of targets) {
       const key = b.pos.join(',')
-      if (
-        cooldown.has(key) ||
-        (b.pos[0] === before[0] && b.pos[2] === before[2] && (kind !== 'wood' || b.pos[1] <= before[1]))
-      )
-        continue
-      if (kind === 'wood' && b.pos[1] > before[1] + 5) continue
       try {
         if (!targetNames.includes((await block(b.pos)).name)) continue
         if (
@@ -157,7 +173,7 @@ function actions(api, memory, save, log) {
         cooldown.set(key, Date.now() + 15000)
         if (res.interrupted_by) return false
         await refresh()
-        log('采集 ' + b.name + ' ' + key)
+        log('采集 ' + b.name + ' ' + key + (chooseTarget && res.gained ? '，背包增量 ' + JSON.stringify(res.gained) : ''))
         return true
       } catch (e) {
         if (!recoverable.has(e.code)) throw e

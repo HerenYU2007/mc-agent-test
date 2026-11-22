@@ -282,3 +282,83 @@ test('从已有工作台续跑时，新入口只通过 HTTP 完成木镐并拾�
   assert.ok(trace.includes('craft'))
   assert.ok(!trace.includes('auth/logout'))
 })
+
+test('AIA 选择会改变实际 NMO 挖掘目标，单次预算不会产生第二次推理', async () => {
+  const { createNmoPlanner } = require('../agent/nmo-planner')
+  const state = { ready: true, gamemode: 'survival', health: 20, food: 20, pos: [0, 68, 0] }
+  const blocks = [
+    [2, 68, 0],
+    [3, 68, 0],
+    [4, 68, 0],
+  ].map((pos) => ({ name: 'oak_log', pos }))
+  const digs = [],
+    notes = []
+  let requests = 0,
+    elapsed = 0
+  const choose = createNmoPlanner(
+    { LLM_API_KEY: 'mock-credential', LLM_MODEL: 'mock-model', LLM_MAX_CALLS: '1' },
+    {
+      now: () => elapsed,
+      log: (line) => notes.push(line),
+      request: async (url, opts) => {
+        requests++
+        assert.equal(url, 'https://api.nju-aia.com/v1/chat/completions')
+        assert.equal(opts.redirect, 'error')
+        assert.equal(opts.headers.Authorization, 'Bearer mock-credential')
+        const observation = JSON.parse(JSON.parse(opts.body).messages[1].content)
+        assert.equal(observation.objective, 'wood')
+        assert.deepEqual(observation.options[1].pos, blocks[1].pos)
+        return Response.json({
+          choices: [{ message: { content: '{"choice":1}' } }],
+          usage: { total_tokens: 47 },
+        })
+      },
+    },
+  )
+  const api = {
+    async call(name, body) {
+      if (name === 'status') return state
+      if (name === 'inventory') return { items: [], armor: {} }
+      if (name === 'find_blocks') return { blocks }
+      if (name === 'get_block') return { name: 'oak_log' }
+      if (name === 'dig') {
+        digs.push(body.pos)
+        return { gained: { oak_log: 1 } }
+      }
+      assert.fail(name)
+    },
+  }
+  const a = actions(
+    api,
+    {},
+    () => {},
+    (line) => notes.push(line),
+    choose,
+  )
+  await a.refresh()
+  await a.gather('wood')
+  elapsed += 60000
+  await a.gather('wood')
+  assert.deepEqual(digs, [blocks[1].pos, blocks[0].pos])
+  assert.equal(requests, 1)
+  assert.ok(notes.some((line) => line.includes('47')))
+  assert.ok(notes.every((line) => !line.includes('mock-credential')))
+})
+
+test('AIA 拒绝越界选择，HTTP 鉴权失败时不把响应正文写入日志', async () => {
+  const { createNmoPlanner } = require('../agent/nmo-planner')
+  const obs = { options: [{}, {}] },
+    model = { LLM_API_KEY: 'mock-credential', LLM_MODEL: 'mock-model' }
+  assert.equal(createNmoPlanner({}), null)
+  assert.throws(() => createNmoPlanner({ ...model, LLM_BASE_URL: 'https://invalid.example/v1' }), /官方/)
+  for (const reply of [
+    Response.json({ choices: [{ message: { content: '{"choice":99}' } }] }),
+    new Response('private-provider-details', { status: 403 }),
+  ]) {
+    const lines = []
+    const choose = createNmoPlanner(model, { log: (s) => lines.push(s), request: async () => reply })
+    assert.equal(await choose(obs), null)
+    assert.ok(lines[0].includes('继续本地流程'))
+    assert.ok(!lines[0].includes('private-provider-details'))
+  }
+})

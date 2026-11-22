@@ -3,6 +3,7 @@ const path = require('node:path')
 const os = require('node:os')
 const { createHash } = require('node:crypto')
 const { setTimeout: delay } = require('node:timers/promises')
+const { createNmoPlanner } = require('./nmo-planner')
 const { NmoClient, waitReady } = require('./nmo-workbench')
 const createProgression = require('./progression')
 const createEquipment = require('./equipment')
@@ -313,6 +314,7 @@ async function runStep(a, m, save, plan, log) {
   return name
 }
 async function runSurvival(env, { log = console.log, sleep = delay, signal } = {}) {
+  const chooseTarget = createNmoPlanner(env, { log, signal })
   const api = new NmoClient(env),
     ownSession = !api.token
   if (ownSession) {
@@ -324,7 +326,7 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
   try {
     const first = await waitReady(api, sleep),
       { memory, save } = checkpoint(env, api, first)
-    const a = actions(api, memory, save, log),
+    const a = actions(api, memory, save, log, chooseTarget),
       plan = strategy(a, memory)
     let previous,
       nextConnect = 0,
@@ -343,6 +345,7 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
           failures = 0
         }
       } catch (e) {
+        if (signal?.aborted) break
         if (
           ['invalid_token', 'unauthorized', 'invalid_credentials'].includes(e.code) ||
           /角色当前模式|切换世界/.test(e.message)
