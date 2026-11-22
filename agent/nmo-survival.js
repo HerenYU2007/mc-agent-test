@@ -97,9 +97,10 @@ function strategy(a, m) {
 async function shelter(a, m, save) {
   const night = a.status.time_of_day >= 12000 && a.status.time_of_day <= 23500
   if (!night) {
-    const pos = m.shelter?.entrance
-    if (pos && m.shelter.closed && dist(a.here(), pos) < 4 && (await a.block(pos)).name === m.shelter.closed)
-      await a.call('dig', { pos, collect: true })
+    for (const piece of (m.shelter?.doorBlocks || []).slice().reverse()) {
+      if (dist(a.here(), piece.pos) < 4 && (await a.block(piece.pos)).name === piece.item)
+        await a.call('dig', { pos: piece.pos, collect: true })
+    }
     delete m.shelter
     m.nights = (m.nights || 0) + 1
     save()
@@ -151,8 +152,11 @@ async function shelter(a, m, save) {
       else await a.gather('wood')
       return
     }
-    await a.call('place', { item: item.name, pos })
-    if (pos.join() === m.shelter.entrance.join()) m.shelter.closed = item.name
+    await a.placeAt(item.name, pos)
+    if (offset[0] === 0 && offset[2] === -1 && offset[1] <= 1) {
+      m.shelter.doorBlocks ??= []
+      m.shelter.doorBlocks.push({ pos, item: item.name })
+    }
     save()
     return
   }
@@ -209,6 +213,10 @@ async function runStep(a, m, save, plan, log) {
     await a.food()
     return '补给食物'
   }
+  if (m.pickup) {
+    await a.reclaim(m.pickup.item)
+    return '继续回收临时工作站'
+  }
   const stage = plan.stage(),
     name = stage.name
   if (name === 'first_night' || m.shelter) {
@@ -257,6 +265,7 @@ async function runStep(a, m, save, plan, log) {
     if (!(await a.ensureSticks(2)) || !(await a.ensurePlanks(3))) return name
     if (await a.station('crafting_table')) {
       await a.craft('wooden_pickaxe')
+      if (!a.tool('sword') && a.count('stick') && (await a.ensurePlanks(2))) await a.craft('wooden_sword')
       await a.reclaim('crafting_table')
     }
   } else if (name === 'get_stone') {
@@ -318,6 +327,7 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
     const a = actions(api, memory, save, log),
       plan = strategy(a, memory)
     let previous,
+      nextConnect = 0,
       failures = 0
     while (!signal?.aborted) {
       try {
@@ -338,6 +348,14 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
           /角色当前模式|切换世界/.test(e.message)
         )
           throw e
+        if (e.code === 'not_connected' && Date.now() >= nextConnect) {
+          nextConnect = Date.now() + 15000
+          try {
+            await api.call('connect', {})
+          } catch (connectError) {
+            log('等待重新连接 ' + connectError.message)
+          }
+        }
         log('动作暂停并重新观测 ' + e.message)
         if (
           !recoverable.has(e.code) &&

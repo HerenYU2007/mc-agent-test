@@ -160,3 +160,125 @@ test('重启保留进度且禁止误用其他存档', (t) => {
   assert.equal(checkpoint(env, api, s).memory.diamonds, 8)
   assert.throws(() => checkpoint(env, api, { ...s, username: 'B' }), /存档归属/)
 })
+
+test('角色占用施工格时，先通过 HTTP 走到安全的相邻格再重试', async () => {
+  let pos = [0, 64, 0],
+    attempts = 0
+  const api = {
+    async call(name, body) {
+      if (name === 'status') return { pos }
+      if (name === 'inventory') return { items: [] }
+      if (name === 'get_block') return { name: body.pos[1] < 64 ? 'stone' : 'air' }
+      if (name === 'move_to') {
+        pos = body.pos
+        return { pos }
+      }
+      if (name === 'place') {
+        if (!attempts++) throw Object.assign(Error('self'), { code: 'blocked_by_self' })
+        assert.notDeepEqual(pos, body.pos)
+        return { placed: body.item, pos: body.pos }
+      }
+      assert.fail(name)
+    },
+  }
+  const a = actions(
+    api,
+    {},
+    () => {},
+    () => {},
+  )
+  await a.refresh()
+  assert.equal((await a.placeAt('hopper', [0, 64, 0])).placed, 'hopper')
+  assert.equal(attempts, 2)
+})
+
+test('从已有工作台续跑时，新入口只通过 HTTP 完成木镐并拾回工作台', async (t) => {
+  const { runSurvival } = require('../agent/nmo-survival')
+  const http = require('node:http')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nmo-http-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const stop = new AbortController(),
+    trace = []
+  const bag = new Map([
+    ['oak_log', 12],
+    ['crafting_table', 1],
+    ['wooden_axe', 1],
+  ])
+  const delta = (name, n) => bag.set(name, (bag.get(name) || 0) + n)
+  let table = false
+  const server = http.createServer(async (req, res) => {
+    const path = req.url.replace('/api/v1/', ''),
+      chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : {}
+    trace.push(path)
+    let result
+    assert.equal(req.headers.authorization, 'Bearer local-test-token')
+    if (path === 'status')
+      result = {
+        ready: true,
+        alive: true,
+        username: 'Sim',
+        dimension: 'overworld',
+        gamemode: 'survival',
+        pos: [0, 64, 0],
+        food: 20,
+        health: 20,
+        time_of_day: 3000,
+      }
+    else if (path === 'inventory')
+      result = {
+        items: [...bag]
+          .filter(([, count]) => count > 0)
+          .map(([name, count], slot) => ({ name, count, slot: 36 + slot })),
+        armor: {},
+      }
+    else if (path === 'craft') {
+      if (body.item === 'oak_planks') {
+        delta('oak_log', -1)
+        delta('oak_planks', 4)
+      } else if (body.item === 'stick') {
+        delta('oak_planks', -2)
+        delta('stick', 4)
+      } else if (body.item === 'wooden_pickaxe') {
+        assert.ok(table)
+        delta('oak_planks', -3)
+        delta('stick', -2)
+        delta(body.item, 1)
+      } else if (body.item === 'wooden_sword') {
+        assert.ok(table)
+        delta('oak_planks', -2)
+        delta('stick', -1)
+        delta(body.item, 1)
+      } else assert.fail(body.item)
+      result = {}
+    } else if (path === 'place') {
+      table = true
+      delta('crafting_table', -1)
+      result = { placed: 'crafting_table', pos: [2, 64, 0] }
+    } else if (path === 'get_block') result = { name: table ? 'crafting_table' : 'air', pos: body.pos }
+    else if (path === 'dig') {
+      assert.ok(table)
+      table = false
+      delta('crafting_table', 1)
+      stop.abort()
+      result = {}
+    } else assert.fail(path)
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ ok: true, result }))
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  t.after(() => new Promise((r) => server.close(r)))
+  await runSurvival(
+    {
+      MC_AGENT_API_URL: 'http://127.0.0.1:' + server.address().port + '/api/v1',
+      MC_AGENT_TOKEN: 'local-test-token',
+      MC_NMO_STATE_PATH: path.join(dir, 'state.json'),
+    },
+    { signal: stop.signal, log: () => {}, sleep: async () => {} },
+  )
+  assert.equal(bag.get('wooden_pickaxe'), 1)
+  assert.equal(bag.get('crafting_table'), 1)
+  assert.ok(trace.includes('craft'))
+  assert.ok(!trace.includes('auth/logout'))
+})

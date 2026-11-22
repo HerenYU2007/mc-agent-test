@@ -13,6 +13,7 @@ const DELTAS = [
 ]
 const ORES = {
   wood: [...LOG_NAMES],
+  cobble: ['stone'],
   stone: [...STONE_TARGETS],
   coal: ['coal_ore', 'deepslate_coal_ore'],
   iron: ['iron_ore', 'deepslate_iron_ore'],
@@ -139,7 +140,10 @@ function actions(api, memory, save, log) {
     const targets = await find(targetNames, kind === 'wood' ? 56 : 32, 40)
     for (const b of targets) {
       const key = b.pos.join(',')
-      if (cooldown.has(key) || (b.pos[0] === before[0] && b.pos[2] === before[2] && b.pos[1] <= before[1]))
+      if (
+        cooldown.has(key) ||
+        (b.pos[0] === before[0] && b.pos[2] === before[2] && (kind !== 'wood' || b.pos[1] <= before[1]))
+      )
         continue
       if (kind === 'wood' && b.pos[1] > before[1] + 5) continue
       try {
@@ -161,7 +165,7 @@ function actions(api, memory, save, log) {
       }
     }
     if (kind === 'wood') return here()[1] < 56 ? stair(80) : explore()
-    return stair({ stone: 52, coal: 60, iron: 18, redstone: -48, diamond: -53 }[kind])
+    return stair({ stone: 52, cobble: 56, coal: 60, iron: 18, redstone: -48, diamond: -53 }[kind])
   }
   async function ensurePlanks(quantity) {
     if (sum((n) => n.endsWith('_planks')) >= quantity) return true
@@ -182,6 +186,33 @@ function actions(api, memory, save, log) {
     await craft('stick', n - count('stick'))
     return count('stick') >= n
   }
+  async function placeAt(item, pos) {
+    try {
+      return await call('place', { item, pos })
+    } catch (error) {
+      if (error.code !== 'blocked_by_self') throw error
+    }
+    await refresh()
+    const feet = here()
+    for (const side of DELTAS) {
+      const step = add(feet, side)
+      const [floor, body, head] = await Promise.all(
+        [
+          [0, -1, 0],
+          [0, 0, 0],
+          [0, 1, 0],
+        ].map((v) => block(add(step, v))),
+      )
+      if (AIR.has(floor.name) || DANGER.test(floor.name) || !AIR.has(body.name) || !AIR.has(head.name)) continue
+      try {
+        await move(step, 0)
+        return await call('place', { item, pos })
+      } catch (e) {
+        if (e.code !== 'blocked_by_self' && !recoverable.has(e.code)) throw e
+      }
+    }
+    throw Object.assign(Error('施工格被角色占用，附近没有可站立的空位'), { code: 'stalled' })
+  }
   async function station(item) {
     if (memory[item]) {
       const pos = memory[item]
@@ -189,6 +220,10 @@ function actions(api, memory, save, log) {
       if ((await block(pos)).name === item) return pos
       delete memory[item]
       save()
+    }
+    if (item === 'crafting_table' && memory.anchor) {
+      const depot = add(memory.anchor, [-2, 0, -1])
+      if (dist(here(), depot) <= 12 && (await block(depot)).name === 'crafting_table') return depot
     }
     if (!count(item)) {
       if (item === 'crafting_table') {
@@ -215,21 +250,39 @@ function actions(api, memory, save, log) {
     if (dist(here(), pos) > 4) await move(pos)
     if ((await block(pos)).name === item) {
       if (item === 'furnace') {
-        const v = await call('window/view', { target: { pos } })
-        if (Object.values(v.sections).some((section) => section.length)) return false
+        const view = await call('window/view', { target: { pos } })
+        if (Object.values(view.sections).some((section) => section.length)) return false
         const pick = tool('pickaxe')
         if (!pick) return false
         await equip(pick)
       }
-      const before = count(item)
-      const r = await call('dig', { pos, collect: true })
-      await refresh()
-      if (r.interrupted_by) return false
-      if (count(item) <= before) {
-        await move(pos, 0)
-        await refresh()
+      if (!memory.pickup) {
+        memory.pickup = { item, before: count(item), attempts: 0 }
+        save()
       }
-      if (count(item) <= before) return false
+      await call('dig', { pos, collect: true })
+      await refresh()
+      if ((await block(pos)).name === item) return false
+    }
+    if (memory.pickup?.item === item) {
+      const job = memory.pickup
+      if (count(item) <= job.before) {
+        const { entities } = await call('get_entities', { types: ['item'], radius: 8 })
+        const drop = entities.find((e) => e.item?.startsWith(item + 'x') && dist(e.pos, pos) < 4)
+        try {
+          await move(drop?.pos || pos, 0)
+        } catch (e) {
+          if (!recoverable.has(e.code)) throw e
+        }
+        await refresh()
+        if (count(item) <= job.before) {
+          job.attempts++
+          save()
+          if (job.attempts < 3) return false
+          log('空工作站已拆除，掉落物三次未拾到 ' + item + ' ' + pos.join(','))
+        }
+      }
+      delete memory.pickup
     }
     delete memory[item]
     save()
@@ -294,12 +347,32 @@ function actions(api, memory, save, log) {
       return true
     }
     if (status.jumping && !status.in_water) await call('posture', { jump: false })
+    if (status.in_lava || status.on_fire) {
+      const water = (await find(['water'], 16, 8))[0]
+      if (water) {
+        await move(water.pos, 0)
+        return true
+      }
+    }
+    if (status.dimension === 'overworld' && status.velocity?.[1] < -13 && count('water_bucket')) {
+      for (const depth of [2, 3]) {
+        const landing = add(here(), [0, -depth, 0]),
+          floor = await block(landing)
+        if (!AIR.has(floor.name) && !DANGER.test(floor.name)) {
+          await call('interact', { pos: landing, item: 'water_bucket' })
+          return true
+        }
+      }
+    }
     const enemy = status.nearest_hostile
     if (!enemy || enemy.dist > 8) return false
     if (enemy.name === 'creeper' || status.health < 12 || !tool('sword')) {
       const entities = (await call('get_entities', { types: ['hostile'], radius: 16 })).entities
       await explore(entities.find((x) => x.id === enemy.id)?.pos)
     } else {
+      if (inventory.offhand?.name === 'shield' && /skeleton|stray|pillager/.test(enemy.name)) {
+        await call('use_item', { item: 'shield', source: 'off-hand', ms: 650 })
+      }
       await equip(tool('sword'))
       await call('attack', { entity_id: enemy.id, max_hits: 2, timeout: 3500 })
     }
@@ -323,6 +396,7 @@ function actions(api, memory, save, log) {
     gather,
     ensurePlanks,
     ensureSticks,
+    placeAt,
     station,
     reclaim,
     smelt,
