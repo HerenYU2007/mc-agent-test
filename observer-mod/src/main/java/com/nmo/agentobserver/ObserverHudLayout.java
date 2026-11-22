@@ -210,4 +210,3 @@ final class ObserverHudLayout {
         gui.fill(x + 1, y + 1, x + w - 1, y + h - 1, PANEL);
     }
 }
-
