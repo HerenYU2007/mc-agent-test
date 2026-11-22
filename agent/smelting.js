@@ -97,8 +97,8 @@ function createSmelting(runtimeState, features) {
       const blocks = [position, position.offset(0, 1, 0)].map(point => connection.blockAt(point))
       if (blocks.some(block => !block || !(EMPTY_BLOCK.test(block.name) || FURNACE_CLEARANCE_BLOCKS.has(block.name)) ||
           runtimeState.supplyBase.owns(connection, block.position) || runtimeState.supplyStation.protects(connection, block.position))) continue
-      const blockers = blocks.filter(block => FURNACE_CLEARANCE_BLOCKS.has(block.name))
-      if (!blockers.length || !connection.canSeeBlock(blockers[0])) continue
+      const blockers = blocks.filter(block => FURNACE_CLEARANCE_BLOCKS.has(block.name)).toReversed()
+      if (!blockers.length || !furnaceBlockVisible(connection, blockers[0])) continue
       const exposed = blocks.flatMap(({ position: point }) => [
         ...SIDES.map(([dx, dz]) => connection.blockAt(point.offset(dx, 0, dz))),
         connection.blockAt(point.offset(0, 1, 0)),
@@ -106,7 +106,7 @@ function createSmelting(runtimeState, features) {
       if (exposed.some(block => !block || WATER_BLOCK_NAMES.has(block.name) || /^(lava|gravel|.*sand|.*concrete_powder)$/.test(block.name) ||
           block.getProperties?.().waterlogged === true)) continue
       for (const block of blockers) {
-        if (!features.canWorkHere(connection) || furnaceThreat() || !connection.canSeeBlock(block) ||
+        if (!features.canWorkHere(connection) || furnaceThreat() || !furnaceBlockVisible(connection, block) ||
             !await features.digWithExposure(block, FURNACE_CLEARANCE_BLOCKS)) return false
       }
       features.log('cleared safe alcove for furnace', { position, blocks: blockers.map(block => block.name) })
@@ -232,10 +232,15 @@ function createSmelting(runtimeState, features) {
     return recovered
   }
 
+  function furnaceBlockVisible(connection, block) {
+    const eyes = connection.entity.position.offset(0, connection.entity.eyeHeight, 0)
+    const ray = block.position.offset(0.5, 0.5, 0.5).minus(eyes)
+    const distance = ray.norm()
+    return distance <= 4 && Boolean(connection.world.raycast(eyes, ray.unit(), distance)?.position.equals(block.position))
+  }
+
   function furnaceReachable(connection, block) {
-    return block?.name === FURNACE_NAME &&
-      block.position.offset(0.5, 0.5, 0.5).distanceTo(connection.entity.position.offset(0, 1.62, 0)) <= 4 &&
-      connection.canSeeBlock(block)
+    return block?.name === FURNACE_NAME && furnaceBlockVisible(connection, block)
   }
 
   function furnaceThreat() {
