@@ -4,6 +4,8 @@ const { Vec3 } = require('vec3')
 const { readLitematic } = require('../litematic')
 const { runCreativeBuild } = require('../agent/creative-build')
 
+const { VERSION, HOST, PORT } = require('../agent/config')
+
 const AUTH = 'offline'
 const USAGE = '用法：npm run build:creative -- [--replace-existing] <蓝图.litematic> <原点X> <原点Y> <原点Z>，或 npm run build:creative -- --inspect <蓝图.litematic>'
 
@@ -24,12 +26,11 @@ async function main(args) {
       value + blueprint.minimum[axis] < (axis === 1 ? -64 : -29999984) ||
       value + blueprint.maximum[axis] > (axis === 1 ? 319 : 29999984))) throw new Error('施工范围超出 Java 版主世界坐标')
   const origin = new Vec3(...coordinates)
-  const port = Number(process.env.MC_PORT || 25567)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MC_PORT 必须是 1–65535 的端口')
+  if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('MC_PORT 必须是 1–65535 的端口')
   const name = process.env.MC_USERNAME || 'NMO-Builder'
   if (!/^[\w-]{1,16}$/.test(name)) throw new Error('MC_USERNAME 必须是有效的 Minecraft 玩家名')
   const bot = require('mineflayer').createBot({
-    host: process.env.MC_HOST || '127.0.0.1', port, username: name, version: process.env.MC_VERSION || '26.1', auth: AUTH,
+    host: HOST, port: PORT, username: name, version: VERSION, auth: AUTH,
   })
   const controller = new AbortController()
   const { signal } = controller

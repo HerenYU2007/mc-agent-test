@@ -36,9 +36,11 @@ supply-base-state.json.tmp
 server.properties
 server/
 server261*/
+server12111*/
 client261*/
 libraries/
 versions/
 logs/
 observer-mod/build/
+observer-mod/run/
 reference-dsh-mc-agent/

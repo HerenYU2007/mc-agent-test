@@ -1,6 +1,6 @@
 # 创造模式逐块施工
 
-在自己的 Minecraft Java 26.1 超平坦测试服上使用。`npm run build:creative` 启动一个专用于施工的 Bot，按低层到高层比较蓝图和现场。Bot 寻找相邻支撑面，核对射线能否击中那一面，飞到可以点击的位置，再用创造栏里的材料逐块右键。每次放置都等待服务器方块状态，暂时够不到的点会在第一遍结束后重试。 [Baritone BuilderProcess](https://github.com/cabaletta/baritone/blob/1.21.4/src/main/java/baritone/process/BuilderProcess.java)
+在自己的 Minecraft Java 1.21.11 超平坦测试服上使用。`npm run build:creative` 启动一个专用于施工的 Bot，按低层到高层比较蓝图和现场。Bot 寻找相邻支撑面，核对射线能否击中那一面，飞到可以点击的位置，再用创造栏里的材料逐块右键。每次放置都等待服务器方块状态，暂时够不到的点会在第一遍结束后重试。 [Baritone BuilderProcess](https://github.com/cabaletta/baritone/blob/1.21.4/src/main/java/baritone/process/BuilderProcess.java)
 
 ## 在 Mac 或 Windows 准备样图
 
@@ -49,7 +49,7 @@ npm run build:creative -- "$fixture_dir/demo.litematic" 0 -60 0
 npm run build:creative -- $fixture 0 -60 0
 ```
 
-原点参数对应 Litematica 的选区原点。负尺寸和偏移子区域会保留各自的相对位置。默认用 `NMO-Builder`、`127.0.0.1:25567` 和 26.1，亦可通过 `MC_USERNAME`、`MC_HOST`、`MC_PORT`、`MC_VERSION` 设置。此入口面向独立测试服的离线 Bot 登录。
+原点参数对应 Litematica 的选区原点。负尺寸和偏移子区域会保留各自的相对位置。默认用 `NMO-Builder`、`127.0.0.1:25567` 和 1.21.11，亦可通过 `MC_USERNAME`、`MC_HOST`、`MC_PORT`、`MC_VERSION` 设置。此入口面向独立测试服的离线 Bot 登录。
 
 需要替换施工点原有方块时，在蓝图文件名前加 `--replace-existing`。Bot 会逐块比较目标，再挖掉施工格内方块种类或状态不匹配的旧块并放上正确材料。模式只处理蓝图明确要求放置方块的坐标。符合蓝图的方块直接计入 `existing`，蓝图空气格与选区外方块保留原状。启用前请核对原点和施工区。
 

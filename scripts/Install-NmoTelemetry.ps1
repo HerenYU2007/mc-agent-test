@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ServerDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'server261-fresh')
+    [string]$ServerDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'server12111-fresh')
 )
 
 $ErrorActionPreference = 'Stop'

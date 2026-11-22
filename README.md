@@ -1,4 +1,4 @@
-# Minecraft Java 26.1 生存 Agent
+# Minecraft Java 1.21.11 生存 Agent
 
 在随机世界中运行的 Minecraft Bot。它会收集材料、寻路采矿、制作装备、处理饥饿和威胁。可选 DeepSeek 高层决策，具体采集、移动和战斗由本地执行器处理。
 
@@ -6,12 +6,12 @@
 
 ## 启动测试服
 
-准备 Node.js 24、Java 25 和 [Minecraft Java 26.1](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-1)。从项目目录安装依赖。
+准备 Node.js 24、Java 21 和 [Minecraft Java 1.21.11](https://www.minecraft.net/en-us/article/minecraft-java-edition-1-21-11)。从项目目录安装依赖。
 
     npm ci
     npm run test:syntax
 
-将官方 26.1 服务端 JAR 放到 server261-fresh/server.jar，再将 server.properties.example 复制为 server261-fresh/server.properties。服务端模板只监听本机 25567 端口，难度为困难，种子留空时新世界随机生成。首次运行后，Minecraft 会生成 EULA 文件。请先阅读 Minecraft EULA，接受后再自行修改该文件并重新启动。
+将官方 1.21.11 服务端 JAR 放到 `server12111-fresh/server.jar`，再将 `server.properties.example` 复制到该目录并命名为 `server.properties`。模板只监听本机 25567 端口，难度为困难，种子留空时随机生成新世界。1.21.11 用独立目录保存世界。首次运行会生成 EULA 文件。阅读并接受 Minecraft EULA 后，将其中的 `eula` 改为 `true` 并重启。
 
     .\start-test-server.ps1
 
@@ -20,31 +20,24 @@
     Copy-Item .env.example .env
     node --env-file=.env agent.js
 
-打开 [本地监控面板](http://127.0.0.1:3001/) 查看实时状态。DeepSeek 默认关闭。可在本地 .env 填入自己的密钥，再通过面板开启。暂停 Bot 时会同时关闭模型。比赛环境可按规则通过环境变量 DEEPSEEK_URL 和 DEEPSEEK_MODEL 配置统一代理及模型。
+Windows 也可双击 `1-启动服务端.bat`、`2-启动Agent.bat`。要连接其他服务器，在 `.env` 或进程环境中设置 `MC_HOST`、`MC_PORT` 和 `MC_VERSION`。
+
+打开 [本地监控面板](http://127.0.0.1:3001/) 查看实时状态。DeepSeek 默认关闭，启用时使用官方 `https://api.deepseek.com/chat/completions` 和 `deepseek-flash`。在本地 `.env` 或进程环境里设置 `DEEPSEEK_API_KEY`，再通过面板开启，或设置 `DEEPSEEK_AUTO_START=1`。暂停 Bot 会同时关闭模型。比赛环境如需使用统一代理，可按规则配置 `DEEPSEEK_URL` 和 `DEEPSEEK_MODEL`。
 
 ## 遥测和原生旁观
 
-启动服务端并生成世界后，安装 [遥测数据包](datapacks/nmo-telemetry/README.md)，随后在服务器控制台运行 reload。
+测试服生成世界后，可安装 [遥测数据包](datapacks/nmo-telemetry/README.md)，随后在服务器控制台运行 `reload`。Fabric 旁观 Mod 和网页面板可直接从 Agent 读取遥测。
 
     .\scripts\Install-NmoTelemetry.ps1
     .\scripts\Get-NmoTelemetry.ps1 -Events 2 -Usage
 
-旁观客户端使用 Minecraft 26.1、Fabric Loader 0.19.5 和完整 JDK 25。先在官方启动器中安装并运行对应 Fabric 配置以下载依赖。构建脚本从 MC_JDK25 或 JAVA_HOME 读取 JDK 安装目录。
-
-    node build-observer-mod.js
-    New-Item -ItemType Directory -Path client261-clean/mods -Force
-    Copy-Item observer-mod/build/nmo-agent-observer-0.1.0.jar client261-clean/mods/ -Force
-    node launch-client261-vanilla.js
-
-服务器管理员可将 NMOViewer 设为旁观模式，并执行 spectate NMO-TestAgent NMOViewer。Mod 使用本机的 /observer 遥测接口显示路线和 Bot 的实时状态。左上显示生命、饱食和背包空位，右下显示行动和目标。按 K 展开决策、实际操作、坐标和 Token 用量。底部透明背包显示 27 格主背包、9 格快捷栏、护甲、副手、数量和耐久。升级时需同时更新 Agent 和旁观 Mod。
-
-### Minecraft 1.21.11 旁观 Mod
-
-使用 JDK 21 和 Gradle 9.2.1，从仓库根目录构建。
+使用 JDK 21 和 Gradle 9.2.1，从仓库根目录构建旁观 Mod。
 
     gradle -p observer-mod build
 
-产物为 `observer-mod/build/libs/nmo-agent-observer-0.1.0+1.21.11.jar`。把它和对应的 Fabric API 0.141.6+1.21.11 放进 Minecraft 1.21.11 的 Fabric 客户端 `mods` 目录，使用 Fabric Loader 0.19.5 或更高版本。Mod 默认读取 `http://127.0.0.1:3001/observer`，不同端口通过客户端 JVM 参数 `-Dnmo.observer.port=端口` 设置。26.1 旁观 Mod 的构建和安装步骤见上文。
+将 `observer-mod/build/libs/nmo-agent-observer-0.1.0+1.21.11.jar` 和 Fabric API `0.141.6+1.21.11` 放进 Minecraft 1.21.11 的 Fabric 客户端 `mods` 目录，使用 Fabric Loader 0.19.5 或更高版本。Windows 也可用 `3-启动观察者客户端.bat` 启动 Gradle 的测试客户端。该脚本读取 `MC_CLIENT_SERVER`（默认 `127.0.0.1:25567`）和 `MC_OBSERVER_DASHBOARD_PORT`（默认 `3001`）。
+
+服务器管理员可执行 `gamemode spectator NMOViewer` 和 `spectate NMO-TestAgent NMOViewer`。Mod 默认读取 `http://127.0.0.1:3001/observer`，不同端口通过客户端 JVM 参数 `-Dnmo.observer.port=端口` 设置。按 K 展开决策、实际操作、坐标和 Token 用量。底部透明 HUD 显示 27 格主背包、9 格快捷栏、护甲、副手、数量和耐久。1.21.11 的 3D 画面通过原生客户端查看，网页继续提供控制和状态面板。
 
 ## 功能文件与协作
 

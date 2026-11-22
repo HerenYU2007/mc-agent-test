@@ -1,6 +1,6 @@
 # NMO Bot 遥测
 
-这个数据包适用于 Minecraft Java 26.1，默认监测 `NMO-TestAgent`。安装到新世界后，执行 `reload` 即可加载。
+这个数据包适用于 Minecraft Java 1.21.11，默认监测 `NMO-TestAgent`。安装到新世界后，执行 `reload` 即可加载。
 
 ```powershell
 .\scripts\Install-NmoTelemetry.ps1

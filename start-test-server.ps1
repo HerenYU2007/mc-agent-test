@@ -1,11 +1,11 @@
 $ErrorActionPreference = 'Stop'
 $serverDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$serverTarget = if (Test-Path (Join-Path $serverDir 'server261-fresh\server.jar')) { 'server261-fresh' } else { 'server' }
+$serverTarget = 'server12111-fresh'
 $serverJar = Join-Path $serverDir "$serverTarget\server.jar"
 $eulaFile = Join-Path $serverDir "$serverTarget\eula.txt"
 $appData = if ($env:APPDATA) { $env:APPDATA } else { "$env:USERPROFILE\AppData\Roaming" }
-$minecraftJava25 = "$appData\.minecraft\runtime\java-runtime-epsilon\bin\java.exe"
-$java = if (Test-Path $minecraftJava25) { $minecraftJava25 } elseif ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\java.exe")) { "$env:JAVA_HOME\bin\java.exe" } else { 'java' }
+$minecraftJava21 = "$appData\.minecraft\runtime\java-runtime-delta\bin\java.exe"
+$java = if ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\java.exe")) { "$env:JAVA_HOME\bin\java.exe" } elseif (Test-Path $minecraftJava21) { $minecraftJava21 } else { 'java' }
 
 if (!(Test-Path $serverJar)) {
   throw "Missing server.jar: $serverJar"

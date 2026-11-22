@@ -1,6 +1,6 @@
 # Minecraft 生存 Agent 接手说明
 
-项目在 Minecraft Java 26.1 原版服务器上运行独立 Bot。DeepSeek 提供可选的高层决策，采矿、合成、战斗、游泳和救急由本地逻辑执行。旁观 Mod 只在观察者客户端加载。
+项目在 Minecraft Java 1.21.11 原版服务器上运行独立 Bot。DeepSeek 提供可选的高层决策，采矿、合成、战斗、游泳和救急由本地逻辑执行。旁观 Mod 只在观察者客户端加载。
 
 ## 从哪里开始
 
@@ -46,9 +46,9 @@ Windows 和 macOS 各自在检出的 `collab` 仓库根目录启动本机同步�
 
 ## 运行环境
 
-- 验证环境为 Windows、Node.js 24、Java 25 和 Minecraft Java 26.1。原生旁观 Mod 使用 Fabric Loader 0.19.5。
+- 验证环境为 Windows、Node.js 24、Java 21 和 Minecraft Java 1.21.11。原生旁观 Mod 使用 Fabric Loader 0.19.5。
 - 正式随机档通常使用 Minecraft `25567` 和监控面板 `3001`。独立战斗服曾使用 `25573` 和 `3011`。隔离回归可在端口空闲时使用 `25574` 和 `3012`。
-- 临时测试用独立服务器目录和客户端游戏目录。每个 Agent 用自己的 `MC_PORT`、`MC_DASHBOARD_PORT`、`RUNTIME_LOG_PATH` 和 `EXPERIENCE_LOG_PATH`。旁观启动时同时指定 `MC_CLIENT_SERVER` 与 `MC_OBSERVER_DASHBOARD_PORT`。启动脚本按当前工作目录选择 `client261-clean`。
+- 临时测试用独立服务器目录和客户端游戏目录。每个 Agent 用自己的 `MC_PORT`、`MC_DASHBOARD_PORT`、`RUNTIME_LOG_PATH` 和 `EXPERIENCE_LOG_PATH`。旁观启动时同时指定 `MC_CLIENT_SERVER` 与 `MC_OBSERVER_DASHBOARD_PORT`。Gradle 的 `runClient` 使用 `observer-mod/run` 作为游戏目录。
 - `MC_BOT_AUTOSTART=0` 可以只启动面板。`DEEPSEEK_AUTO_START` 默认关闭，启用需要进程环境里的 `DEEPSEEK_API_KEY`。可用 `DEEPSEEK_URL` 和 `DEEPSEEK_MODEL` 指向授权端点。面板暂停 Bot 会断开游戏连接并关闭模型。测试脚本可用本机模拟决策端点，避免真实 Token 消耗。
 
 ## 执行边界
@@ -104,7 +104,7 @@ Windows 和 macOS 各自在检出的 `collab` 仓库根目录启动本机同步�
 2. 将 Bot 置于一个高一格的石岸附近，确认卡住后挖低一格并上岸。补做低氧时取消挖掘的检查。
 3. 低血、有食物且有追兵时，核对 `fleeing` 先出现，`retreat food stop` 和 `food consumed successfully` 随后出现。已实测金苹果。追兵过近中断和满血再接战在这次发布中没有单独复测。
 4. 穿齐钻石级护甲后，从 `/state` 的 `supplyBase.qualification` 核对实际拾取计数。第 9 颗时仍应锁定，第 10 颗后应先看到 `surface resupply required after diamonds`。回露天地面并备有至少 8 份食物后，依次确认 `surface resupply complete`、`supply base unlocked after resupply` 和基地选址。自动熔炉建成后投放粗铁和煤，核对铁锭进入下层木桶。拉杆开启时核对燃料漏斗锁住、指示火把熄灭。
-5. 修改 JavaScript 后用 `npm run test:syntax`。修改旁观 Mod 后用 `node build-observer-mod.js`，在 26.1 Fabric 观察者中确认物品图标、格位和经验条上下位置。测试结束后先核对端口和 PID，再按当前场景保留或恢复 Bot、模型和客户端状态。
+5. 修改 JavaScript 后用 `npm run test:syntax`。修改旁观 Mod 后用 `gradle -p observer-mod build`，在 1.21.11 Fabric 观察者中确认物品图标、格位和经验条上下位置。测试结束后先核对端口和 PID，再按当前场景保留或恢复 Bot、模型和客户端状态。
 6. 在露天地面停留至记录位置，再进入覆顶矿洞。将饱食降到 10，观察 `food surface route started`、`food surface reached` 和 `food recovery complete`。记录真实落点和饱食度，可用 Y=68 以下的台阶出口复现固定高度路线的问题。排查失败时先看起点到露天地面的可达性、挖掘工具和垫路材料。
 
 此前的 26.1 隔离服验证覆盖了有记录和无记录两种回地面路径。起点 Y=40、出口 Y=48，出洞后用测试提供的干草合成面包，吃到饱食度 14，并回收临时合成台。判断露天需要结合天光和实心顶盖，洞口附近的侧向光照有时也能达到 13。

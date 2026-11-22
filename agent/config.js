@@ -3,9 +3,9 @@ const { Vec3 } = require('vec3')
 
 const PROJECT_ROOT = path.resolve(__dirname, '..')
 
-const VERSION = process.env.MC_VERSION || '26.3'
+const VERSION = process.env.MC_VERSION || '1.21.11'
 const HOST = process.env.MC_HOST || '127.0.0.1'
-const PORT = Number(process.env.MC_PORT || 25565)
+const PORT = Number(process.env.MC_PORT || 25567)
 const USERNAME = process.env.MC_USERNAME || 'NMO-TestAgent'
 const VIEWER_PORT = Number(process.env.MC_VIEWER_PORT || 3000)
 const DASHBOARD_PORT = Number(process.env.MC_DASHBOARD_PORT || 3001)

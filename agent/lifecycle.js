@@ -4,7 +4,6 @@ const { pathfinder, Movements } = require('mineflayer-pathfinder')
 const collectBlock = require('mineflayer-collectblock').plugin
 const toolPlugin = require('mineflayer-tool').plugin
 const pvp = require('mineflayer-pvp').plugin
-const mineflayerViewer = require('prismarine-viewer').mineflayer
 const {
   VERSION, HOST, PORT, USERNAME, VIEWER_PORT, LOG_NAMES, WATER_BLOCK_NAMES, TABLE_NAME,
 } = require('./config')
@@ -100,8 +99,13 @@ function createLifecycle(runtimeState, features) {
       ].map(name => runtimeState.mcData.itemsByName[name]?.id).filter(Number.isInteger)
       connection.pathfinder.setMovements(runtimeState.movements)
       if (process.env.MC_VIEWER !== '0') {
-        mineflayerViewer(connection, { port: VIEWER_PORT, firstPerson: false })
-        features.log('viewer started', { url: `http://127.0.0.1:${VIEWER_PORT}` })
+        const { supportedVersions } = require('prismarine-viewer/viewer')
+        if (supportedVersions.includes(connection.version)) {
+          require('prismarine-viewer').mineflayer(connection, { port: VIEWER_PORT, firstPerson: false })
+          features.log('viewer started', { url: `http://127.0.0.1:${VIEWER_PORT}` })
+        } else {
+          features.log('当前游戏版本请使用原生 Fabric 旁观客户端', { version: connection.version })
+        }
       }
       features.startDashboard()
       features.log('spawned', { version: connection.version, position: connection.entity.position })
