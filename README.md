@@ -38,6 +38,14 @@
 
 服务器管理员可将 NMOViewer 设为旁观模式，并执行 spectate NMO-TestAgent NMOViewer。Mod 使用本机的 /observer 遥测接口显示路线和 Bot 的实时状态。左上显示生命、饱食和背包空位，右下显示行动和目标。按 K 展开决策、实际操作、坐标和 Token 用量。底部透明背包显示 27 格主背包、9 格快捷栏、护甲、副手、数量和耐久。升级时需同时更新 Agent 和旁观 Mod。
 
+### Minecraft 1.21.11 旁观 Mod
+
+使用 JDK 21 和 Gradle 9.2.1，从仓库根目录构建。
+
+    gradle -p observer-mod build
+
+产物为 `observer-mod/build/libs/nmo-agent-observer-0.1.0+1.21.11.jar`。把它和对应的 Fabric API 0.141.6+1.21.11 放进 Minecraft 1.21.11 的 Fabric 客户端 `mods` 目录，使用 Fabric Loader 0.19.5 或更高版本。Mod 默认读取 `http://127.0.0.1:3001/observer`，不同端口通过客户端 JVM 参数 `-Dnmo.observer.port=端口` 设置。26.1 旁观 Mod 的构建和安装步骤见上文。
+
 ## 功能文件与协作
 
 Agent 的功能代码位于 `agent/`。命令入口继续是 `node agent.js`，功能位置和并行编辑约定见 [AI 接手文档](docs/AI-HANDOFF.md#并行编辑)。改完运行 `npm run test:syntax` 检查入口、功能模块和蓝图代码。
