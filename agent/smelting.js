@@ -1,12 +1,15 @@
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
-const { STONE_DROPS, FURNACE_NAME, TABLE_TOP, IRON_INPUT_NAMES, IRON_FUEL_NAMES, EMPTY_BLOCK } = require('./config')
+const { STONE_DROPS, FURNACE_NAME, TABLE_TOP, IRON_INPUT_NAMES, IRON_FUEL_NAMES, EMPTY_BLOCK, WATER_BLOCK_NAMES } = require('./config')
 
 const FURNACE_NAMES = new Set([FURNACE_NAME])
 const FURNACE_PICKUP_LIMIT = 2
+const FURNACE_CLEARANCE_BLOCKS = new Set(['stone', 'cobblestone', 'granite', 'diorite', 'andesite', 'deepslate',
+  'cobbled_deepslate', 'tuff', 'dirt', 'coarse_dirt'])
+const SIDES = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
 function createSmelting(runtimeState, features) {
-  async function ensureFurnace(stations = null) {
+  async function ensureFurnace(stations = null, allowClearance = true) {
     const connection = runtimeState.bot
     if (!features.canWorkHere(connection)) return null
     if (!stations) {
@@ -69,6 +72,7 @@ function createSmelting(runtimeState, features) {
       }
       if (!connection.inventory.items().some(item => item.name === FURNACE_NAME)) return null
     }
+    if (allowClearance && await clearFurnaceAlcove(connection, base)) return ensureFurnace(stations, false)
     features.log('furnace placement skipped: no reachable, recoverable site')
     return null
   }
@@ -79,8 +83,36 @@ function createSmelting(runtimeState, features) {
     if (center.norm() > 4 || connection.world.raycast(eyes, center.unit(), center.norm())) return false
     // Plan to stand on the drop after breaking the furnace, using the existing terrain.
     const goal = new goals.GoalBlock(position.x, position.y, position.z)
-    const path = connection.pathfinder.getPathTo(runtimeState.movements, goal, 200)
+    const { result: path } = connection.pathfinder.getPathFromTo(runtimeState.movements, connection.entity.position, goal,
+      { timeout: 200, searchRadius: 8, optimizePath: false }).next().value
     return path.status === 'success' && path.path.every(step => !step.toBreak.length && !step.toPlace.length)
+  }
+
+  async function clearFurnaceAlcove(connection, base) {
+    for (const [x, z] of SIDES) {
+      const position = base.offset(x, 0, z)
+      const support = connection.blockAt(position.offset(0, -1, 0))
+      if (support?.boundingBox !== 'block' || runtimeState.movements.blocksToAvoid.has(support.type)) continue
+      // Keep the tunnel floor and roof intact. Only open a two-block side pocket in dry, stable rock.
+      const blocks = [position, position.offset(0, 1, 0)].map(point => connection.blockAt(point))
+      if (blocks.some(block => !block || !(EMPTY_BLOCK.test(block.name) || FURNACE_CLEARANCE_BLOCKS.has(block.name)) ||
+          runtimeState.supplyBase.owns(connection, block.position) || runtimeState.supplyStation.protects(connection, block.position))) continue
+      const blockers = blocks.filter(block => FURNACE_CLEARANCE_BLOCKS.has(block.name))
+      if (!blockers.length || !connection.canSeeBlock(blockers[0])) continue
+      const exposed = blocks.flatMap(({ position: point }) => [
+        ...SIDES.map(([dx, dz]) => connection.blockAt(point.offset(dx, 0, dz))),
+        connection.blockAt(point.offset(0, 1, 0)),
+      ])
+      if (exposed.some(block => !block || WATER_BLOCK_NAMES.has(block.name) || /^(lava|gravel|.*sand|.*concrete_powder)$/.test(block.name) ||
+          block.getProperties?.().waterlogged === true)) continue
+      for (const block of blockers) {
+        if (!features.canWorkHere(connection) || furnaceThreat() || !connection.canSeeBlock(block) ||
+            !await features.digWithExposure(block, FURNACE_CLEARANCE_BLOCKS)) return false
+      }
+      features.log('cleared safe alcove for furnace', { position, blocks: blockers.map(block => block.name) })
+      return true
+    }
+    return false
   }
 
   async function reclaimTemporaryFurnace(pending = runtimeState.temporaryFurnace) {
