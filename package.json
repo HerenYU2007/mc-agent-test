@@ -9,7 +9,9 @@
     "test:nmo-workbench": "node --test scripts/test-nmo-workbench.js",
     "build:creative": "node scripts/build-creative.js",
     "test:creative-build": "node scripts/test-creative-build.js",
-    "test:syntax": "node scripts/check-agent-syntax.js"
+    "test:syntax": "node scripts/check-agent-syntax.js",
+    "nmo:survival": "node agent/nmo-survival.js",
+    "test:nmo-survival": "node --test scripts/test-nmo-survival.js"
   },
   "keywords": [],
   "author": "",

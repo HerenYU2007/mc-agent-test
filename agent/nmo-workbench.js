@@ -181,4 +181,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { runWorkbench }
+module.exports = { NmoClient, waitReady, runWorkbench }

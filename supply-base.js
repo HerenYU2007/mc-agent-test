@@ -587,4 +587,4 @@ function createSupplyBase(api) {
   }
 }
 
-module.exports = { createSupplyBase }
+module.exports = { createSupplyBase, DEPOT, WORKSHOP }
