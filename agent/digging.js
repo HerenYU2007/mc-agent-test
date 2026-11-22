@@ -53,7 +53,7 @@ function createDigging(runtimeState, features) {
 
   // Dig the first solid block between the bot's eyes and `target`. Gravel/sand
   // (falling blocks), fluids and anything not on the safe list are never touched.
-  async function clearBlockerFor(target) {
+  async function clearBlockerFor(target, interrupted = () => false) {
     const connection = runtimeState.bot
     if (!connection?.entity || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
     const eyes = connection.entity.position.offset(0, connection.entity.eyeHeight, 0)
@@ -71,7 +71,7 @@ function createDigging(runtimeState, features) {
     const feet = connection.entity.position.floored()
     if (blocker.position.x === feet.x && blocker.position.z === feet.z && blocker.position.y < feet.y) return false
     try {
-      if (!await equipBestToolFor(blocker)) return false
+      if (!await equipBestToolFor(blocker) || interrupted()) return false
       features.log('clearing blocker for target', { blocker: blocker.name, blockerPosition: blocker.position, target: target.name })
       await connection.dig(blocker, true)
       return true
@@ -81,9 +81,9 @@ function createDigging(runtimeState, features) {
     }
   }
 
-  async function digWithExposure(target, allowedNames = null) {
+  async function digWithExposure(target, allowedNames = null, { interrupted = () => false } = {}) {
     const connection = runtimeState.bot
-    if (!target || !connection?.entity || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
+    if (interrupted() || !target || !connection?.entity || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
     let current = connection.blockAt(target.position)
     if (!current || current.type !== target.type || (allowedNames && !allowedNames.has(current.name)) ||
         !connection.canDigBlock(current)) return false
@@ -92,7 +92,7 @@ function createDigging(runtimeState, features) {
     let timer
     try {
       await equipBestToolFor(current)
-      if (connection !== runtimeState.bot || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
+      if (interrupted() || connection !== runtimeState.bot || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
       current = connection.blockAt(target.position)
       if (!current || current.type !== target.type) return false
 
@@ -103,17 +103,18 @@ function createDigging(runtimeState, features) {
       let targetCenter = current.position.offset(0.5, 0.5, 0.5)
       if (eyes.distanceTo(targetCenter) > 4.2) {
         try {
-          await features.gotoWithTimeout(new goals.GoalNear(current.position.x, current.position.y, current.position.z, 2.5), 'approach dig block', 3500)
+          await features.gotoWithTimeout(new goals.GoalNear(current.position.x, current.position.y, current.position.z, 2.5), 'approach dig block', 3500,
+            runtimeState.mineBusy ? features.mineRouteOptions(connection) : undefined)
         } catch {}
-        if (connection !== runtimeState.bot || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
+        if (interrupted() || connection !== runtimeState.bot || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
         current = connection.blockAt(target.position)
         if (!current || current.type !== target.type) return false
       }
 
       // Clear blocker if line of sight is obstructed
       if (!connection.canSeeBlock(current)) {
-        await clearBlockerFor(current)
-        if (connection !== runtimeState.bot || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
+        await clearBlockerFor(current, interrupted)
+        if (interrupted() || connection !== runtimeState.bot || features.waterOwnsMovement() || runtimeState.emergencyRetreating) return false
         current = connection.blockAt(target.position)
         if (!current || current.type !== target.type) return false
       }
@@ -122,16 +123,18 @@ function createDigging(runtimeState, features) {
       await equipBestToolFor(current)
       if (current.harvestTools && !current.canHarvest(connection.heldItem?.type ?? null)) return false
 
+      if (interrupted()) return false
       // Stop lingering movement and settle on ground to prevent in-air 5x dig slowdown
       features.stopPathfinder()
       connection.clearControlStates()
       if (!connection.entity.onGround) {
         const settleStart = Date.now()
-        while (!connection.entity.onGround && Date.now() - settleStart < 350) {
+        while (!interrupted() && !connection.entity.onGround && Date.now() - settleStart < 350) {
           await new Promise(resolve => setTimeout(resolve, 50))
         }
       }
 
+      if (interrupted()) return false
       // Partial blocks can have air at the center of their block coordinates.
       eyes = connection.entity.position.offset(0, connection.entity.eyeHeight, 0)
       const samples = [[0.5, 0.5, 0.5]]
@@ -147,6 +150,7 @@ function createDigging(runtimeState, features) {
       })
       targetCenter = visibleShape ?? current.position.offset(0.5, 0.5, 0.5)
       await connection.lookAt(targetCenter, true)
+      if (interrupted()) return false
       const hit = connection.blockAtCursor(4.5)
       if (!hit || hit.type !== current.type || !hit.position.equals(current.position)) {
         features.log('dig cancelled; crosshair target changed', { target: current.position, hit: hit?.position ?? null })
@@ -171,7 +175,7 @@ function createDigging(runtimeState, features) {
 
       // Verify block is broken: check current block state or poll briefly for server block update
       const checkStart = Date.now()
-      while (Date.now() - checkStart < 1200) {
+      while (!interrupted() && Date.now() - checkStart < 1200) {
         const checkBlock = connection.blockAt(current.position)
         if (!checkBlock || EMPTY_BLOCK.test(checkBlock.name) || checkBlock.type === 0 || checkBlock.type !== target.type) {
           features.log('dig confirmed broken', { block: current.name, position: current.position, ms: Date.now() - checkStart })
@@ -180,6 +184,7 @@ function createDigging(runtimeState, features) {
         await new Promise(resolve => setTimeout(resolve, 50))
       }
 
+      if (interrupted()) return false
       const finalCheck = connection.blockAt(current.position)
       if (!finalCheck || EMPTY_BLOCK.test(finalCheck.name) || finalCheck.type === 0 || finalCheck.type !== target.type) {
         return true

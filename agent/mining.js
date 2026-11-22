@@ -1,8 +1,9 @@
-const { goals } = require('mineflayer-pathfinder')
+const { goals, Movements } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
+const { avoidWetCorners, avoidWetSteps, dryFooting, fluidBeside, nearbyHostiles, pathHazard, safeStepUp, threatNear } = require('./movement-safety')
 const {
   STONE_DROPS, STONE_TARGETS, COAL_TARGETS, DEFAULT_MINE_TARGET_NAMES, WATER_BLOCK_NAMES, STONE_TARGET,
-  IRON_INPUT_NAMES, ORE_SCAN_RADIUS, BLOCK_MINE_RADIUS,
+  IRON_INPUT_NAMES, ORE_SCAN_RADIUS, BLOCK_MINE_RADIUS, TUNNEL_SAFE_BLOCKS,
 } = require('./config')
 
 const COAL_DROPS = new Set(['coal'])
@@ -10,6 +11,36 @@ const ORE_CACHE_LIMIT = 128
 
 function createMining(runtimeState, features) {
   let nextMineSearchAt = 0
+  let activeMineRun = null
+
+  function interruptMiningForCombat(connection) {
+    if (runtimeState.bot !== connection || (!runtimeState.mineMode && !runtimeState.mineBusy)) return
+    const run = activeMineRun
+    if (run?.interrupted) return
+    runtimeState.mineMode = false
+    if (run) {
+      run.interrupted = true
+      run.releaseStep?.()
+      run.restoreMovements?.()
+    }
+    features.stopPathfinder()
+    if (connection.targetDigBlock) connection.stopDigging()
+    runtimeState.currentMineTarget = null
+    features.clearNavigation('mine-combat-handoff')
+    features.log('mining control yielded to combat', { target: runtimeState.currentMineOrder?.target })
+  }
+
+  function mineCombatInterrupted(connection, run = activeMineRun) {
+    return Boolean(run?.interrupted) || runtimeState.bot !== connection || connection.health <= 0 ||
+      !runtimeState.mineMode || runtimeState.emergencyRetreating || runtimeState.fleeingActive ||
+      runtimeState.meleeConnection === connection || runtimeState.impactGuards.has(connection)
+  }
+  let routeFailures = 0
+  const missedRoutes = new Map()
+  const recentMinePositions = []
+  const recentApproaches = new Map()
+  const recentMiningSteps = new Map()
+  let modelMineHint = null
 
   const knownOres = new Map()
 
@@ -67,23 +98,7 @@ function createMining(runtimeState, features) {
     const origin = runtimeState.bot.entity.position
     if (Math.abs(position.y - origin.y) > (isOreName(block.name) ? 40 : 16)) return false
 
-    // Match MineProcess.prune(): reject targets touching fluids and retain a
-    // nearby transparent face so the final dig can be performed safely.
-    const offsets = [
-      [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
-    ]
-    for (const [dx, dy, dz] of offsets) {
-      const neighbour = runtimeState.bot.blockAt(position.offset(dx, dy, dz))
-      if (neighbour?.name === 'lava') return false
-      // Do not select an underwater face as a normal mine target. The movement
-      // controller deliberately takes over in water, so a mine plan there would
-      // fight the surfacing logic and repeatedly cancel itself.
-      if (neighbour?.name === 'water' || neighbour?.name === 'bubble_column') return false
-    }
-    // Baritone's normal MineProcess allows non-exposed targets; exposure is
-    // only an optional legit-mine setting. Keep buried stone/ore candidates and
-    // let the pathfinder/digWithExposure decide whether a safe approach exists.
-    return true
+    return !fluidBeside(runtimeState.bot, position)
   }
 
   function mineGoalForBlock(position) {
@@ -150,80 +165,359 @@ function createMining(runtimeState, features) {
       positions.push(position)
     }
     const candidates = []
+    const threats = miningThreats(runtimeState.bot)
+    let unsafeTargets = 0
     for (const position of positions) {
       const block = runtimeState.bot.blockAt(position)
       if (runtimeState.supplyStation.protects(runtimeState.bot, position) || !runtimeState.mineTargetNames.has(block?.name) || !isPlausibleMineTarget(position, block)) continue
+      if (threatNear(position.offset(0.5, 0.5, 0.5), threats, 8)) {
+        unsafeTargets++
+        continue
+      }
       let exposedFaces = 0
       for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
         if (isTransparentForMine(runtimeState.bot.blockAt(position.offset(dx, dy, dz)))) exposedFaces += 1
       }
       candidates.push({ position, block, exposedFaces })
     }
+    if (unsafeTargets) features.log('mine targets skipped near hostile', { count: unsafeTargets })
     return candidates
   }
 
-  // True when any node of a planned path stands in, or directly above, water.
-  function pathTouchesWater(path) {
-    for (const node of path) {
-      const feet = runtimeState.bot.blockAt(new Vec3(Math.floor(node.x), Math.floor(node.y), Math.floor(node.z)))
-      const below = runtimeState.bot.blockAt(new Vec3(Math.floor(node.x), Math.floor(node.y) - 1, Math.floor(node.z)))
-      if ((feet && WATER_BLOCK_NAMES.has(feet.name)) || (below && WATER_BLOCK_NAMES.has(below.name))) return true
+  function miningThreats(connection) {
+    return nearbyHostiles(connection, features.isHostileEntity)
+  }
+
+  function mineRouteHazard(connection, path, options = {}, threats = miningThreats(connection)) {
+    return pathHazard(connection, path, { ...options, threats })
+  }
+
+  function mineRouteOptions(connection) {
+    return {
+      allowClutch: false,
+      validateRoute: (path, options) => mineRouteHazard(connection, path, options),
+    }
+  }
+
+  function gotoMineRoute(connection, goal, label, timeoutMs) {
+    return features.gotoWithTimeout(goal, label, timeoutMs, mineRouteOptions(connection))
+  }
+
+  function mineInReach(connection, block) {
+    const eyes = connection.entity.position.offset(0, connection.entity.eyeHeight || 1.62, 0)
+    return eyes.distanceTo(block.position.offset(0.5, 0.5, 0.5)) <= 4.2 &&
+      connection.canDigBlock(block) && connection.canSeeBlock(block)
+  }
+
+  async function previewMinePath(connection, goal, deadline, {
+    movements = runtimeState.movements, budget = 240, searchRadius = 42,
+  } = {}) {
+    if (performance.now() >= deadline) return null
+    const search = connection.pathfinder.getPathFromTo(movements, connection.entity.position, goal, {
+      timeout: Math.min(budget, Math.max(12, deadline - performance.now())),
+      tickTimeout: 15, searchRadius, optimizePath: false,
+    })
+    let preview
+    try {
+      do {
+        preview = search.next().value?.result ?? preview
+        if (preview?.status !== 'partial' || performance.now() >= deadline) return preview
+        await new Promise(resolve => setImmediate(resolve))
+      } while (runtimeState.bot === connection && connection.entity && connection.health > 0)
+      return null
+    } finally {
+      search.return()
+    }
+  }
+
+  function remainingMineDistance(position, target) {
+    return Math.hypot(position.x - target.x, position.y - target.y, position.z - target.z)
+  }
+
+  function noteMineFailure(plan, message, kind = 'path') {
+    runtimeState.committedMineTarget = null
+    routeFailures += 1
+    const key = minePositionKey(plan.position)
+    const misses = Math.min(3, (missedRoutes.get(key) || 0) + 1)
+    missedRoutes.set(key, misses)
+    runtimeState.mineBlacklist.set(key, Date.now() + 90000 * misses)
+    features.log('mine target paused after failure', {
+      block: plan.block.name, position: plan.position, message, kind, consecutive: routeFailures, cooldownMs: 90000 * misses,
+    })
+    features.persistExperience({ cycle: runtimeState.cycle, action: 'mine-replan',
+      experience: plan.block.name + ' 的路线或站位失败，先换其他矿点，连续失败后换位置再规划。' })
+  }
+
+
+  function adjacentMiningSteps(connection, target, {allowClear = false} = {}) {
+    const origin = connection.entity.position.floored()
+    const result = []
+    const threats = miningThreats(connection)
+    const passable = block => block && block.boundingBox === 'empty' &&
+      !WATER_BLOCK_NAMES.has(block.name) && !/lava|fire|cactus|powder_snow/.test(block.name)
+    for (const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      for (const dy of [0,1,-1]) {
+        const pos = origin.offset(dx,dy,dz)
+        if (!dryFooting(connection, pos) || threatNear(pos, threats, 6)) continue
+        const support = connection.blockAt(pos.offset(0,-1,0))
+        if (!support || support.boundingBox !== 'block' ||
+            /lava|fire|cactus|magma|powder_snow/.test(support.name) || WATER_BLOCK_NAMES.has(support.name)) continue
+        const blocks = [connection.blockAt(pos.offset(0,1,0)),connection.blockAt(pos)]
+        if (dy === 1 && !passable(connection.blockAt(origin.offset(0,2,0)))) continue
+        if (dy === -1 && !passable(connection.blockAt(pos.offset(0,2,0)))) continue
+        const obstacles = blocks.filter(block => !passable(block))
+        if (obstacles.length) {
+          if (!allowClear || obstacles.some(block => !block || !TUNNEL_SAFE_BLOCKS.has(block.name) ||
+            isOreName(block.name) || runtimeState.supplyStation.protects(connection,block.position) ||
+            runtimeState.supplyBase.owns(connection,block.position) || fluidBeside(connection, block.position) ||
+            !connection.canDigBlock(block))) continue
+          if (/sand|gravel|concrete_powder|lava/.test(connection.blockAt(pos.offset(0,2,0))?.name ?? '')) continue
+        }
+        const key = minePositionKey(pos)
+        if (recentApproaches.get(key) > Date.now()) continue
+        result.push({pos,dy,obstacles,score:(target ? pos.distanceTo(target) : 0) + obstacles.length * 4 + (dy === 0 ? 0 : 0.35)})
+      }
+    }
+    return result.sort((a,b)=>a.score-b.score)
+  }
+
+  async function walkAdjacentMiningStep(connection, step, interrupted) {
+    const from = connection.entity.position.clone()
+    const unsafe = () => !dryFooting(connection, step.pos) || threatNear(step.pos, miningThreats(connection), 6)
+    for (const block of step.obstacles) {
+      if (unsafe() || fluidBeside(connection, block.position)) return false
+      if (interrupted() || !await features.digWithExposure(block,new Set([block.name]),{interrupted})) return false
+    }
+    if (interrupted() || unsafe() || (step.dy === 1 && !safeStepUp(connection, step.pos))) return false
+    features.stopPathfinder()
+    const target = step.pos.offset(0.5,0,0.5)
+    const started = Date.now()
+    let moved = false
+    const run = activeMineRun
+    const release = () => {
+      if (run.releaseStep !== release) return
+      run.releaseStep = null
+      connection.setControlState('forward',false)
+      connection.setControlState('jump',false)
+    }
+    run.releaseStep = release
+    try {
+      while (!interrupted() && !unsafe() && Date.now()-started < 1050) {
+        const pos = connection.entity.position
+        const dx = target.x-pos.x, dz = target.z-pos.z
+        if (Math.hypot(dx,dz) <= 0.23) break
+        await connection.look(Math.atan2(-dx,-dz),0,true)
+        if (interrupted() || unsafe()) return false
+        connection.setControlState('forward',true)
+        connection.setControlState('jump',step.dy === 1 && pos.y < step.pos.y - 0.05)
+        await new Promise(resolve=>setTimeout(resolve,70))
+      }
+      moved = !interrupted() && connection.entity.position.floored().equals(step.pos) &&
+        connection.entity.position.distanceTo(from) >= 0.55
+      features.log(moved ? 'mine close step moved' : 'mine close step stalled', {
+        from, to: connection.entity.position.clone(), expected:step.pos, cleared:step.obstacles.map(block=>block.name),
+      })
+      return moved
+    } finally {
+      release()
+      if (!moved && !interrupted()) recentApproaches.set(minePositionKey(step.pos),Date.now()+30000)
+    }
+  }
+
+  async function relocateMining(connection) {
+    const origin = connection.entity.position.floored()
+    // Recovery walks through known safe ground, so one failed ore approach
+    // cannot trigger a second tunnel into the same wall.
+    const run = activeMineRun
+    const interrupted = () => mineCombatInterrupted(connection,run) || !runtimeState.botEnabled ||
+      features.foodRecoveryNeeded() || features.closeCombatPlan() || features.waterOwnsMovement()
+    const closeSteps = adjacentMiningSteps(connection, null, {allowClear:true})
+      .filter(step => !recentMinePositions.some(previous=>step.pos.equals(previous)))
+    features.log('mine recovery examines nearby exits',{
+      position:connection.entity.position.clone(),
+      onGround:connection.entity.onGround,
+      options:closeSteps.map(step=>({pos:step.pos,obstacles:step.obstacles.map(block=>block.name)})),
+    })
+    for (const step of closeSteps.slice(0,3)) {
+      if (interrupted()) break
+      if (!await walkAdjacentMiningStep(connection,step,interrupted)) continue
+      recentMinePositions.push(origin.clone())
+      if (recentMinePositions.length > 6) recentMinePositions.shift()
+      return true
+    }
+    const movements = new Movements(connection, runtimeState.mcData)
+    movements.canDig = false
+    movements.maxDropDown = 3
+    movements.infiniteLiquidDropdownDistance = false
+    avoidWetCorners(movements, connection)
+    avoidWetSteps(movements, connection)
+    movements.allow1by1towers = false
+    movements.allowParkour = false
+    movements.liquidCost = 500
+    const recent = recentMinePositions.some(position => origin.distanceTo(position) < 2)
+    if (!recent) {
+      recentMinePositions.push(origin.clone())
+      if (recentMinePositions.length > 6) recentMinePositions.shift()
+    }
+    const head = position => connection.blockAt(position)
+    const dryClear = block => block && block.boundingBox === 'empty' &&
+      !WATER_BLOCK_NAMES.has(block.name) && block.name !== 'lava'
+    const nearby = []
+    const offsets = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]]
+    for (const distance of [2, 3, 5, 8]) {
+      for (const [dx,dz] of offsets) {
+        for (const dy of [0,1,-1,2,-2,3,-3,4,-4]) {
+          const pos = origin.offset(dx*distance,dy,dz*distance)
+          if (recentMinePositions.some(previous => pos.distanceTo(previous) < 2)) continue
+          const ground = head(pos.offset(0,-1,0))
+          if (ground?.boundingBox === 'block' && !features.isWaterAdjacent(pos) &&
+              dryClear(head(pos)) && dryClear(head(pos.offset(0,1,0)))) nearby.push(pos)
+        }
+      }
+    }
+
+    const deadline = performance.now() + 1200
+    for (const pos of nearby.slice(0, 16)) {
+      if (performance.now() >= deadline || features.closeCombatPlan() || features.foodRecoveryNeeded()) break
+      const goal = new goals.GoalBlock(pos.x,pos.y,pos.z)
+      const result = await previewMinePath(connection,goal,deadline,{movements,budget:90,searchRadius:16})
+      if (interrupted()) return false
+      if (result?.status !== 'success' || !result.path.length || mineRouteHazard(connection, result.path)) continue
+      const old = connection.pathfinder.movements
+      const restore = () => {
+        if (run.restoreMovements !== restore) return
+        run.restoreMovements = null
+        if (connection.pathfinder.movements === movements) connection.pathfinder.setMovements(old)
+      }
+      run.restoreMovements = restore
+      connection.pathfinder.setMovements(movements)
+      try {
+        runtimeState.lastDecision = 'explore'
+        runtimeState.navigationState = { target: pos, waypoints: result.path, label: 'mine-relocate' }
+        await gotoMineRoute(connection,goal,'mine scouting route',5200)
+        if (interrupted()) return false
+        if (connection.entity.position.distanceTo(origin) < 2) continue
+        features.log('mine scouting relocated', { from: origin, to: connection.entity.position.floored() })
+        recentMinePositions.push(connection.entity.position.floored())
+        if (recentMinePositions.length > 6) recentMinePositions.shift()
+        return true
+      } catch (error) {
+        features.log('mine scouting route failed', { target: pos, message: error.message })
+        if (features.closeCombatPlan() || features.foodRecoveryNeeded() || !runtimeState.botEnabled) break
+      } finally {
+        restore()
+      }
     }
     return false
   }
 
-  function planMineTarget() {
-    if (!runtimeState.bot?.entity || !runtimeState.movements) return null
+
+  async function planMineTarget() {
+    const connection = runtimeState.bot
+    if (!connection?.entity || !runtimeState.movements) return null
     const scanned = searchMineCandidates()
-    const candidates = scanned
-      // Buried targets (no transparent face) can never pass canSeeBlock from the
-      // surface, so rank exposed candidates first and only then fall back to distance.
-      .sort((a, b) => (isOreName(a.block.name) ? 0 : 1) - (isOreName(b.block.name) ? 0 : 1) ||
-        (a.exposedFaces > 0 ? 0 : 1) - (b.exposedFaces > 0 ? 0 : 1) ||
-        a.position.distanceTo(runtimeState.bot.entity.position) - b.position.distanceTo(runtimeState.bot.entity.position))
-      // Baritone keeps a bounded known-location list; do the same so a local
-      // search never monopolizes the Mineflayer event loop.
-      .slice(0, 14)
-    let best = null
-    let noPath = 0
-    let wetTargets = 0
+    const hintCost = position => modelMineHint ? Math.min(20,Math.hypot(position.x-modelMineHint.x,position.z-modelMineHint.z)) * 0.3 : 0
+    const inReach = scanned.find(candidate => mineInReach(connection,candidate.block))
+    if (inReach) return { ...inReach, result: {status:'success',path:[]}, score:0 }
+
+    const origin = connection.entity.position.clone()
+    const candidates = scanned.sort((a,b) =>
+      (a.exposedFaces > 0 ? 0 : 1) - (b.exposedFaces > 0 ? 0 : 1) ||
+      a.position.distanceTo(origin) + hintCost(a.position) - b.position.distanceTo(origin) - hintCost(b.position)).slice(0,18)
+    let bestComplete = null
+    let bestProgress = null
     let evaluated = 0
+    const blockedRoutes = {}
     const statusCounts = {}
-    const evaluationDeadline = performance.now() + 320
+    const deadline = performance.now() + 1400
     for (const candidate of candidates) {
-      // Stop once a reasonable target is in hand; keep going a little further so
-      // the oreBonus in scoreMinePath can promote a slightly worse-looking ore
-      // over a flat stone candidate.
-      if ((best && evaluated >= 6) || (evaluated > 0 && performance.now() >= evaluationDeadline)) break
-      evaluated += 1
+      if (performance.now() >= deadline || runtimeState.bot !== connection ||
+          !runtimeState.mineMode || (bestComplete && evaluated >= 5)) break
+      evaluated++
       try {
-        const result = runtimeState.bot.pathfinder.getPathTo(runtimeState.movements, mineGoalForBlock(candidate.position), 75)
-        statusCounts[result?.status ?? 'none'] = (statusCounts[result?.status ?? 'none'] || 0) + 1
-        const alreadyReachable = result?.status === 'success' && runtimeState.bot.canDigBlock(candidate.block) &&
-          runtimeState.bot.canSeeBlock(candidate.block) && runtimeState.bot.entity.position.distanceTo(candidate.position) <= 5
-        if (!result || !Array.isArray(result.path) || (!result.path.length && !alreadyReachable) || result.status === 'noPath') {
-          runtimeState.mineBlacklist.set(minePositionKey(candidate.position), Date.now() + 15000)
-          noPath += 1
+        const result = await previewMinePath(connection,mineGoalForBlock(candidate.position),deadline)
+        const status = result?.status || 'none'
+        statusCounts[status] = (statusCounts[status] || 0) + 1
+        if (!result?.path?.length || status === 'noPath') continue
+        const hazard = mineRouteHazard(connection, result.path)
+        if (hazard) {
+          blockedRoutes[hazard] = (blockedRoutes[hazard] || 0) + 1
+          if (hazard !== '路线太靠近怪物') {
+            runtimeState.mineBlacklist.set(minePositionKey(candidate.position), Date.now() + 30000)
+          }
           continue
         }
-        // A single getPathTo call gets only 40ms per tick, so medium-distance
-        // targets usually come back as "partial". Accept partial paths — the dig
-        // step will stop if the bot does not actually arrive — but still reject
-        // paths that cross water, which was the real problem.
-        if (pathTouchesWater(result.path) || features.isWaterAdjacent(candidate.position)) {
-          runtimeState.mineBlacklist.set(minePositionKey(candidate.position), Date.now() + 120000)
-          wetTargets += 1
+        const score = scoreMinePath(candidate, result) + hintCost(candidate.position)
+        if (status === 'success') {
+          if (!bestComplete || score < bestComplete.score) bestComplete = {...candidate,result,score}
           continue
         }
-        const score = scoreMinePath(candidate, result)
-        if (!best || score < best.score) best = { ...candidate, result, score }
+        const end = result.path.at(-1)
+        const netAdvance = remainingMineDistance(origin,candidate.position) - remainingMineDistance(end,candidate.position)
+        if (netAdvance < 1.5 || remainingMineDistance(end,origin) < 2) continue
+        const progressScore = remainingMineDistance(end,candidate.position) * 1.8 + result.path.length * 0.2 + hintCost(candidate.position)
+        if (!bestProgress || progressScore < bestProgress.score) bestProgress = {...candidate,result,score:progressScore}
       } catch (error) {
-        runtimeState.mineBlacklist.set(minePositionKey(candidate.position), Date.now() + 15000)
-        features.log('mine candidate path search failed', { position: candidate.position, message: error.message })
+        features.log('mine candidate path search failed',{position:candidate.position,message:error.message})
       }
     }
-    features.log('mine scan evaluated', { plausible: scanned.length, evaluated, noPath, wetTargets, statusCounts })
-    return best
+    features.log('mine scan evaluated',{plausible:scanned.length,evaluated,blockedRoutes,statusCounts,complete:Boolean(bestComplete)})
+    return bestComplete ?? bestProgress
+  }
+
+  async function approachMinePlan(connection, plan, interrupted) {
+    const target = plan.position
+    if (mineInReach(connection,plan.block)) return true
+
+    const first = plan.result.path[0]
+    if (first) {
+      const firstPos = new Vec3(Math.floor(first.x),Math.floor(first.y),Math.floor(first.z))
+      const origin = connection.entity.position.floored()
+      const adjacent = adjacentMiningSteps(connection,firstPos,{allowClear:true})
+      const exact = adjacent.find(step=>step.pos.equals(firstPos))
+      // A diagonal ascent can repeatedly time out even after its blocks
+      // have been cleared. Walk an independently verified cardinal stair
+      // before looking for the remaining path from the new position.
+      const toward = adjacent.filter(step => step !== exact &&
+        step.pos.distanceTo(firstPos)+0.2 < origin.distanceTo(firstPos) &&
+        step.pos.distanceTo(target) <= origin.distanceTo(target)+0.6 &&
+        (recentMiningSteps.get(minePositionKey(step.pos)) || 0) <= Date.now())
+      for (const next of [...(exact ? [exact] : []),...toward.slice(0,2)]) {
+        if (interrupted()) return false
+        if (await walkAdjacentMiningStep(connection,next,interrupted)) {
+          recentMiningSteps.set(minePositionKey(origin),Date.now()+4500)
+          if (next !== exact) features.log('mine diagonal approach split into verified steps',{
+            ore:target,original:firstPos,step:next.pos,
+          })
+          return mineInReach(connection,plan.block) || mineGoalForBlock(target).isEnd(connection.entity.position.floored())
+        }
+      }
+    }
+    if (interrupted()) return false
+    const path = plan.result.path
+    if (plan.result.status === 'success' && path.length <= 3) {
+      await gotoMineRoute(connection,mineGoalForBlock(target),'mine target approach',6500)
+      return true
+    }
+    // Follow a bounded prefix of the candidate's dry route. Searching for its
+    // first few steps is cheaper than restarting A* for a buried ore each tick.
+    const origin = connection.entity.position.clone()
+    const prefix = path.slice(0,3).filter(node => remainingMineDistance(node,origin) >= 1.1)
+    let failure
+    for (const node of prefix.reverse().slice(0,2)) {
+      if (interrupted()) return false
+      const goal = new goals.GoalBlock(Math.floor(node.x),Math.floor(node.y),Math.floor(node.z))
+      try {
+        await gotoMineRoute(connection,goal,'mine route segment',3100)
+        if (connection.entity.position.distanceTo(origin) < 1) continue
+        features.log('mine route segment moved',{from:origin.floored(),to:connection.entity.position.floored(),ore:target})
+        return mineInReach(connection,plan.block) || mineGoalForBlock(target).isEnd(connection.entity.position.floored())
+      } catch (error) {
+        if (interrupted()) return false
+        failure = error
+      }
+    }
+    throw failure ?? Error('短段路线未产生有效位移')
   }
 
   async function minePlannerTick(reason = 'tick') {
@@ -244,15 +538,21 @@ function createMining(runtimeState, features) {
       void features.decideAndAct('gear-ready')
       return false
     }
+    const connection = runtimeState.bot
+    const run = { interrupted: false, releaseStep: null, restoreMovements: null }
+    activeMineRun = run
+    const cancelled = () => mineCombatInterrupted(connection,run)
     runtimeState.mineBusy = true
     runtimeState.miningPausedForFood = false
     runtimeState.lastMineSearchAt = Date.now()
     nextMineSearchAt = runtimeState.lastMineSearchAt + 750
     let objectiveReached = false
+    let replanRequested = false
     try {
       await features.clearBackpack(runtimeState.bot, 'mining', { duringMining: true })
       if (!runtimeState.bot?.entity || !runtimeState.mineMode || features.foodRecoveryNeeded() || features.closeCombatPlan()) return false
       await features.autoEquipArmor(true)
+      if (cancelled()) return false
       const pickaxes = runtimeState.bot.inventory.items().filter(item => item.name.endsWith('_pickaxe'))
       const hasHarvestTool = pickaxes.length > 0 && [...runtimeState.mineTargetNames].some(name => {
         const required = runtimeState.mcData.blocksByName[name]?.harvestTools
@@ -267,23 +567,65 @@ function createMining(runtimeState, features) {
         return false
       }
       features.log('mine planner search', { reason, targets: [...runtimeState.mineTargetNames].slice(0, 12) })
-      const savedTarget = runtimeState.committedMineTarget && runtimeState.bot.blockAt(runtimeState.committedMineTarget.position)
-      if (!savedTarget || savedTarget.type !== runtimeState.committedMineTarget.block.type || !runtimeState.mineTargetNames.has(savedTarget.name)) {
-        if (runtimeState.committedMineTarget) features.log('mine commitment released', { reason: 'target-changed', position: runtimeState.committedMineTarget.position })
+
+      const advanceDecision = async reason => {
+        const connection = runtimeState.bot
+        routeFailures = 0
         runtimeState.committedMineTarget = null
-      }
-      const resumed = Boolean(runtimeState.committedMineTarget)
-      const plan = runtimeState.committedMineTarget ?? planMineTarget()
-      if (!plan) {
-        runtimeState.mineNeedsNewGround = true
+        runtimeState.currentMineTarget = null
+        features.clearNavigation('mine-replan')
+        features.log('mine route released for replanning',{reason})
+        const moved = connection?.entity && !features.closeCombatPlan() &&
+          !features.foodRecoveryNeeded() && await relocateMining(connection)
+        if (cancelled()) return
+        runtimeState.mineNeedsNewGround = !moved
         runtimeState.mineMode = false
-        runtimeState.navigationState = { target: null, waypoints: [], label: 'mine-search-empty' }
-        nextMineSearchAt = Date.now() + 3000
-        features.log('mine planner found no reachable target', { oreRadius: ORE_SCAN_RADIUS, blockRadius: BLOCK_MINE_RADIUS })
-        recordMineAudit('no-reachable-target')
-        features.persistExperience({ cycle: runtimeState.cycle, action: 'mine-search', experience: '扫描到的目标没有可行路径，已跳过并等待环境变化后重搜' })
+        if (runtimeState.activeGoal?.type === 'mine') runtimeState.activeGoal = null
+        nextMineSearchAt = Date.now() + 3200
+        replanRequested = true
+      }
+      if (routeFailures >= 2) {
+        await advanceDecision('consecutive-route-failures')
         return false
       }
+      // A committed ore remains the objective across useful short movements,
+      // but after moving, the stand/path must be calculated from the new feet.
+      let plan
+      const previous = runtimeState.committedMineTarget
+      const seen = previous && runtimeState.bot.blockAt(previous.position)
+      if (seen && seen.type === previous.block.type && runtimeState.mineTargetNames.has(seen.name) &&
+          !fluidBeside(connection, previous.position) &&
+          !threatNear(previous.position.offset(0.5, 0.5, 0.5), miningThreats(connection), 8)) {
+        if (mineInReach(runtimeState.bot,seen)) {
+          plan = {...previous,block:seen,result:{status:'success',path:[]}}
+        } else {
+          const preview = await previewMinePath(runtimeState.bot,mineGoalForBlock(previous.position),performance.now()+340)
+          if (cancelled()) return false
+          const end = preview?.path?.at(-1)
+          if (end && !mineRouteHazard(connection, preview.path) && (preview.status === 'success' ||
+              remainingMineDistance(runtimeState.bot.entity.position,previous.position) - remainingMineDistance(end,previous.position) >= 1.5)) {
+            plan = {...previous,block:seen,result:preview}
+          } else {
+            noteMineFailure(previous,'重新评估后没有可继续推进的路线')
+          }
+        }
+      } else if (previous) {
+        runtimeState.committedMineTarget = null
+        features.log('mine commitment released; target changed or became unsafe', { position: previous.position })
+      }
+      if (routeFailures >= 2) {
+        await advanceDecision('consecutive-route-failures')
+        return false
+      }
+      plan ??= await planMineTarget()
+      if (cancelled()) return false
+      if (!plan) {
+        features.log('mine planner found no reachable target',{oreRadius:ORE_SCAN_RADIUS,blockRadius:BLOCK_MINE_RADIUS})
+        recordMineAudit('no-reachable-target')
+        await advanceDecision('no-reachable-target')
+        return false
+      }
+      const resumed = Boolean(previous && previous.position.equals(plan.position))
 
       runtimeState.committedMineTarget = plan
       runtimeState.lastDecision = 'mine'
@@ -302,23 +644,25 @@ function createMining(runtimeState, features) {
         score: Number(plan.score.toFixed(2)),
       })
 
-      const startPosition = runtimeState.bot.entity.position.clone()
-      const distance = startPosition.distanceTo(target)
-      const interrupted = () => !runtimeState.mineMode || runtimeState.miningPausedForFood || features.foodRecoveryNeeded() ||
-        features.waterOwnsMovement() || runtimeState.emergencyRetreating || runtimeState.fleeingActive || features.damageInterruptActive(runtimeState.bot)
+
+      const interrupted = () => {
+        if (cancelled() || runtimeState.miningPausedForFood || features.foodRecoveryNeeded() ||
+            features.waterOwnsMovement() || features.damageInterruptActive(connection)) return true
+        if (!threatNear(target.offset(0.5, 0.5, 0.5), miningThreats(connection), 8) && !fluidBeside(connection, target)) return false
+        if (runtimeState.committedMineTarget === plan) {
+          runtimeState.committedMineTarget = null
+          features.log('mine interrupted; target became unsafe', { position: target })
+        }
+        return true
+      }
       try {
-        await features.gotoWithTimeout(mineGoalForBlock(target), 'mine target path', Math.min(22000, 7000 + distance * 230))
-      } catch (error) {
-        if (interrupted()) return false
-        if (/timeout/i.test(error.message) && startPosition.distanceTo(runtimeState.bot.entity.position) >= 3 && (plan.retries ?? 0) < 2) {
-          plan.retries = (plan.retries ?? 0) + 1
-          features.log('mine path still progressing; retrying same target', { position: target, retry: plan.retries })
+        const arrived = await approachMinePlan(runtimeState.bot,plan,interrupted)
+        if (!arrived) {
+          if (!interrupted()) routeFailures = 0
           return false
         }
-        runtimeState.committedMineTarget = null
-        runtimeState.mineBlacklist.set(minePositionKey(target), Date.now() + 20000)
-        features.log('mine target unreachable; blacklisted', { block: plan.block.name, position: target, message: error.message })
-        features.persistExperience({ cycle: runtimeState.cycle, action: 'mine-replan', experience: `目标 ${plan.block.name} 不可达，已临时加入黑名单并改搜其他目标` })
+      } catch (error) {
+        if (!interrupted()) noteMineFailure(plan,error.message)
         return false
       }
 
@@ -342,19 +686,20 @@ function createMining(runtimeState, features) {
       const countedDiamond = drops.has('diamond') && features.needsPostArmorDiamonds(runtimeState.bot)
       await features.maybePlaceTorch(true)
       if (interrupted()) return false
-      if (!await features.digWithExposure(current, runtimeState.mineTargetNames)) {
+      if (!await features.digWithExposure(current, runtimeState.mineTargetNames, { interrupted })) {
         if (interrupted()) return false
-        runtimeState.committedMineTarget = null
-        runtimeState.mineBlacklist.set(minePositionKey(target), Date.now() + 10000)
-        features.log('mine dig failed; target blacklisted for replan', { block: current.name, position: target })
-        features.persistExperience({ cycle: runtimeState.cycle, action: 'mine-replan', experience: `目标 ${current.name} 无法从当前站位挖到，重新搜索可达目标` })
+        noteMineFailure(plan,'站位已到达但挖掘失败','dig')
         return false
       }
+      if (interrupted()) return false
       runtimeState.committedMineTarget = null
       runtimeState.mineBlacklist.delete(minePositionKey(target))
+      missedRoutes.delete(minePositionKey(target))
+      routeFailures = 0
       features.log('mine target mined', { block: current.name, position: target })
       const pickedUp = await features.pickUpBlockDrop(drops, target, before, true)
       features.log('mine pickup result', { block: current.name, pickedUp })
+      if (interrupted()) return false
       if (countedDiamond && pickedUp && runtimeState.supplyBase.recordDiamonds(features.inventoryItemCount('diamond') - before)) {
         const { diamonds, target, needsResupply } = runtimeState.supplyBase.qualification()
         features.log('post-armor diamonds collected', { count: diamonds, target })
@@ -369,9 +714,12 @@ function createMining(runtimeState, features) {
       features.persistExperience({ cycle: runtimeState.cycle, action: 'mine', experience: `按实际寻路节点到达 ${current.name} 的可见面并完成挖掘` })
       return true
     } finally {
+      activeMineRun = null
       runtimeState.mineBusy = false
-      runtimeState.currentMineTarget = null
+      if (!run.interrupted) runtimeState.currentMineTarget = null
+      if (run.interrupted) features.log('mining task unwound after combat handoff')
       if (runtimeState.miningPausedForFood) setImmediate(() => features.monitorFood())
+      if (replanRequested && !runtimeState.urgentThreatQueued) setImmediate(() => void features.decideAndAct('mine-replan'))
       if (objectiveReached && !runtimeState.urgentThreatQueued) setImmediate(() => void features.decideAndAct('mine-complete'))
       if (runtimeState.urgentThreatQueued) {
         runtimeState.urgentThreatQueued = false
@@ -444,6 +792,7 @@ function createMining(runtimeState, features) {
     const exactStone = stoneDrop ?? (objective?.kind === 'stone' && objective.names.length === 1 ? objective.names[0] : null)
     const targets = exactStone ? new Set([exactStone === 'cobbled_deepslate' ? 'deepslate' : 'stone']) : mineTargetSetFromName(targetName)
     if (runtimeState.committedMineTarget && !targets.has(runtimeState.committedMineTarget.block.name)) runtimeState.committedMineTarget = null
+    modelMineHint = modelTarget && Number.isFinite(modelTarget.x) && Number.isFinite(modelTarget.z) ? modelTarget : null
     runtimeState.mineTargetNames = targets
     runtimeState.currentMineOrder = { cycle: runtimeState.cycle, requested, target: targetName || 'general',
       source: objective ? 'base' : stoneLimit ? 'station' : requested ? 'model' : 'survival' }
@@ -467,6 +816,8 @@ function createMining(runtimeState, features) {
     scanBlockIds,
     isOreName,
     minePlannerTick,
+    mineRouteOptions,
+    interruptMiningForCombat,
     finishMineObjective,
     recordMineAudit,
     mineForGear,

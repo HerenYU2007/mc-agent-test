@@ -1,10 +1,17 @@
 const { Vec3 } = require('vec3')
+const { nearbyHostiles, threatNear } = require('./movement-safety')
 const { WATER_BLOCK_NAMES, EMPTY_BLOCK, TUNNEL_SAFE_BLOCKS } = require('./config')
 
 const PLACED_SUPPORT = /(cobblestone|_planks|_slab|_stairs|crafting_table|furnace|scaffolding)$/
 
 function createSwimming(runtimeState, features) {
   let swimDrySince = 0
+  const failedShores = new Map()
+
+  function rememberFailedShore(shore, now) {
+    failedShores.set(shore.toString(), { shore, until: now + 20000 })
+    runtimeState.swimFailedShore = shore
+  }
 
   let swimBankDig = null
 
@@ -32,13 +39,20 @@ function createSwimming(runtimeState, features) {
     if (!runtimeState.bot?.entity) return null
     const origin = runtimeState.bot.entity.position.floored()
     const surface = waterSurfaceY(runtimeState.bot, origin)
+    const now = Date.now()
+    for (const [key, entry] of failedShores) {
+      if (entry.until <= now) failedShores.delete(key)
+    }
+    const failed = [...failedShores.values()]
+    const threats = nearbyHostiles(runtimeState.bot, features.isHostileEntity)
+    const heights = new Set([surface + 1, surface, surface + 2, origin.y + 1, origin.y, origin.y - 1])
     let best = null
     let bestDistance = Infinity
     for (let dx = -radius; dx <= radius; dx += 1) {
       for (let dz = -radius; dz <= radius; dz += 1) {
-        for (const y of [surface + 1, surface, surface + 2]) {
+        for (const y of heights) {
           const position = new Vec3(origin.x + dx, y, origin.z + dz)
-          if (runtimeState.swimFailedShore && position.distanceTo(runtimeState.swimFailedShore) < 2) continue
+          if (failed.some(entry => position.distanceTo(entry.shore) < 2)) continue
           const support = runtimeState.bot.blockAt(position.offset(0, -1, 0))
           if (support?.boundingBox !== 'block' || runtimeState.movements?.blocksToAvoid.has(support.type)) continue
           if (!EMPTY_BLOCK.test(runtimeState.bot.blockAt(position)?.name) ||
@@ -50,7 +64,8 @@ function createSwimming(runtimeState, features) {
               runtimeState.bot.blockAt(water.offset(0, 2, 0))?.boundingBox === 'empty'
           })
           if (!edge) continue
-          const distance = runtimeState.bot.entity.position.distanceTo(position) + 2 * Math.abs(y - surface - 1)
+          const distance = runtimeState.bot.entity.position.distanceTo(position) +
+            2 * Math.max(0, y - origin.y - 1) + (threatNear(position, threats, 6) ? 16 : 0)
           if (distance < bestDistance) {
             best = position
             bestDistance = distance
@@ -285,6 +300,7 @@ function createSwimming(runtimeState, features) {
       if (swimDrySince && now - swimDrySince >= 550) {
         runtimeState.bot.clearControlStates()
         runtimeState.swimmingMode = false
+        failedShores.clear()
         runtimeState.swimShore = runtimeState.swimProgress = runtimeState.swimFailedShore = null
         features.clearNavigation('landed')
         features.log('swim reached dry ground', { position: runtimeState.bot.entity.position })
@@ -306,6 +322,7 @@ function createSwimming(runtimeState, features) {
     swimDrySince = 0
     if (!runtimeState.swimmingMode) {
       runtimeState.swimmingMode = true
+      failedShores.clear()
       runtimeState.lastDecision = 'swim-ashore'
       runtimeState.bot.pvp.stop()
       features.stopPathfinder()
@@ -316,7 +333,7 @@ function createSwimming(runtimeState, features) {
       if (!swimOverride && lastLanding?.connection === runtimeState.bot && now - runtimeState.landedAt < 7000 &&
           runtimeState.bot.entity.position.distanceTo(lastLanding.feet) < 4) {
         const platform = dryComponent(lastLanding.feet, 40)
-        runtimeState.swimFailedShore = lastLanding.feet
+        rememberFailedShore(lastLanding.feet, now)
         const shore = findMainlandShore(platform) ?? findNearestLandForSwimming(32)
         if (shore) {
           swimOverride = new Vec3(shore.x, shore.y, shore.z)
@@ -354,20 +371,20 @@ function createSwimming(runtimeState, features) {
         return
       }
     }
-    if (runtimeState.swimShore && runtimeState.swimProgress && now - runtimeState.swimProgress.at > 3000 && oxygen > 6) {
-      runtimeState.swimFailedShore = runtimeState.swimShore
+    if (runtimeState.swimShore && runtimeState.swimProgress && now - runtimeState.swimProgress.at > (swimOverride ? 7000 : 3000) && oxygen > 6) {
+      rememberFailedShore(runtimeState.swimShore, now)
+      features.log('swim shore blocked; trying another exit', { shore: runtimeState.swimShore })
+      swimOverride = null
       runtimeState.swimShore = null
       runtimeState.swimProgress = null
     }
     if (swimOverride) {
-      // Heading for the mainland: skip the progress-based shore swap so it does
-      // not turn back to the platform it just left.
+      // Allow more time to cross open water before abandoning a far shore.
       if (!runtimeState.swimShore || runtimeState.swimShore.x !== swimOverride.x || runtimeState.swimShore.z !== swimOverride.z) {
         runtimeState.swimShore = swimOverride
         runtimeState.swimProgress = { distance: Infinity, at: now }
         features.log('swim shore selected', { position: runtimeState.swimShore, reason: 'mainland override' })
       }
-      runtimeState.swimProgress = runtimeState.swimProgress && { ...runtimeState.swimProgress, at: now }
     } else if (!runtimeState.swimShore && (!runtimeState.swimProgress || now - runtimeState.swimProgress.at > 1500)) {
       runtimeState.swimShore = findNearestLandForSwimming(14)
       runtimeState.swimProgress = { distance: Infinity, at: now }

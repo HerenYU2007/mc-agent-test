@@ -252,7 +252,8 @@ function createCrafting(runtimeState, features) {
       if (drop) {
         const feet = drop.position.offset(0, 0.05, 0).floored()
         try {
-          await features.gotoWithTimeout(new goals.GoalBlock(feet.x, feet.y, feet.z), 'drop pickup', 2500)
+          await features.gotoWithTimeout(new goals.GoalBlock(feet.x, feet.y, feet.z), 'drop pickup', 2500,
+            duringMining ? features.mineRouteOptions(connection) : undefined)
         } catch (error) {
           features.log('drop approach interrupted', { position: feet, message: error.message })
         }

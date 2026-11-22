@@ -8,6 +8,8 @@ const {
   VERSION, HOST, PORT, USERNAME, VIEWER_PORT, LOG_NAMES, WATER_BLOCK_NAMES, TABLE_NAME,
 } = require('./config')
 
+const { avoidWetCorners, avoidWetSteps, fluidBeside } = require('./movement-safety')
+
 const NORMAL_DECISION_INTERVAL_MS = 10000
 
 function createLifecycle(runtimeState, features) {
@@ -54,6 +56,9 @@ function createLifecycle(runtimeState, features) {
       const dig = connection.dig.bind(connection)
       connection.dig = async (block, ...args) => {
         const watchingMine = connection === runtimeState.bot && runtimeState.mineBusy && runtimeState.currentMineTarget && block
+        if (connection === runtimeState.bot && runtimeState.mineBusy && block && fluidBeside(connection, block.position)) {
+          throw new Error('采矿取消，待挖方块贴近流体')
+        }
         if (!watchingMine) return dig(block, ...args)
         const targetHit = block.name === runtimeState.currentMineTarget.name && block.position.equals(runtimeState.currentMineTarget)
         if (!targetHit && features.isOreName(block.name)) {
@@ -68,6 +73,10 @@ function createLifecycle(runtimeState, features) {
       runtimeState.mcData = minecraftData(connection.version)
       runtimeState.movements = new Movements(connection, runtimeState.mcData)
       runtimeState.movements.canDig = true
+      runtimeState.movements.maxDropDown = 3
+      runtimeState.movements.infiniteLiquidDropdownDistance = false
+      avoidWetCorners(runtimeState.movements, connection)
+      avoidWetSteps(runtimeState.movements, connection, () => runtimeState.mineBusy)
       runtimeState.movements.exclusionAreasBreak.push(block =>
         runtimeState.supplyStation.protects(connection, block?.position) || !(runtimeState.mineBusy || runtimeState.surfaceRouteActive || runtimeState.baseProspecting) ? 100 : 0)
       runtimeState.movements.allow1by1towers = true

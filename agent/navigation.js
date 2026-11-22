@@ -1,5 +1,6 @@
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
+const { watchPath } = require('./movement-safety')
 const { WATER_BLOCK_NAMES } = require('./config')
 const { planClutchStep, executeClutchStep, clutchTimeBudget } = require('./water-clutch-path')
 
@@ -88,7 +89,16 @@ function createNavigation(runtimeState, features) {
     await gotoWithTimeout(new goals.GoalNearXZ(x, z, 2), label, Math.min(26000, 7500 + distance * 350))
   }
 
-  async function walkWithTimeout(connection, goal, label, timeoutMs) {
+  async function walkWithTimeout(connection, goal, label, timeoutMs, validateRoute) {
+    return watchPath(connection, goal, () => executeWalk(connection, goal, label, timeoutMs), {
+      validate: validateRoute,
+      canJump: () => runtimeState.bot === connection && !features.waterOwnsMovement() &&
+        !features.isWaterClutchActive(connection) && !runtimeState.impactGuards.has(connection),
+      log: features.log,
+    })
+  }
+
+  async function executeWalk(connection, goal, label, timeoutMs) {
     let timer
     const movement = connection.pathfinder.goto(goal)
     const timeout = new Promise((_, reject) => {
@@ -105,7 +115,7 @@ function createNavigation(runtimeState, features) {
     }
   }
 
-  async function gotoWithTimeout(goal, label, timeoutMs, { allowClutch } = {}) {
+  async function gotoWithTimeout(goal, label, timeoutMs, { allowClutch, validateRoute } = {}) {
     if (features.waterOwnsMovement()) throw new Error('movement paused until the bot reaches dry ground')
     const connection = runtimeState.bot
     const movements = connection.pathfinder.movements
@@ -134,7 +144,7 @@ function createNavigation(runtimeState, features) {
     if (deadline <= Date.now()) throw new Error(`${label} timeout`)
     if (runtimeState.bot !== connection || !runtimeState.botEnabled || connection.health <= 0 ||
         features.waterOwnsMovement() || features.isWaterClutchActive(connection)) throw new Error('movement interrupted')
-    return walkWithTimeout(connection, goal, label, deadline - Date.now())
+    return walkWithTimeout(connection, goal, label, deadline - Date.now(), validateRoute)
   }
 
   function canWorkHere(connection, duringMining = false) {

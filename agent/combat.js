@@ -1,5 +1,6 @@
-const { goals } = require('mineflayer-pathfinder')
+const { goals, Movements } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
+const { avoidWetCorners, avoidWetSteps, dryFooting, pathHazard } = require('./movement-safety')
 const { THREAT_RADIUS, EMPTY_BLOCK, RANGED_HOSTILES } = require('./config')
 
 const COUNTER_WINDOW_MS = 600
@@ -170,7 +171,7 @@ function createCombat(runtimeState, features) {
     }
     try {
       await equipCombatItem()
-      while (connection === runtimeState.bot && Date.now() < deadline && runtimeState.bot.health > 0 && !features.waterOwnsMovement() && !runtimeState.emergencyRetreating && !killed) {
+      while (connection === runtimeState.bot && Date.now() < deadline && runtimeState.bot.health > 0 && !features.waterOwnsMovement() && !runtimeState.emergencyRetreating && !runtimeState.fleeingActive && !killed) {
         if (runtimeState.impactGuards.has(connection)) {
           clearJump()
           await new Promise(resolve => setTimeout(resolve, 60))
@@ -339,6 +340,7 @@ function createCombat(runtimeState, features) {
             continue
           }
         }
+        if (runtimeState.emergencyRetreating || runtimeState.fleeingActive) break
         clearJump()
         features.lowerCombatShield(connection)
         if (defensive) {
@@ -356,13 +358,15 @@ function createCombat(runtimeState, features) {
         await new Promise(resolve => setTimeout(resolve, 120))
       }
     } finally {
-      clearJump()
-      features.cancelCombatBow(connection, '本次战斗结束')
-      if (!runtimeState.fleeingActive && !runtimeState.impactGuards.has(connection)) features.lowerCombatShield(connection)
+      if (!runtimeState.fleeingActive && !runtimeState.impactGuards.has(connection)) {
+        clearJump()
+        features.cancelCombatBow(connection, '本次战斗结束')
+        features.lowerCombatShield(connection)
+      }
       runtimeState.meleeConnection = null
       connection.removeListener('entityDead', onDeath)
       connection.removeListener('entityHurt', onHurt)
-      features.clearNavigation('combat-ended')
+      if (!runtimeState.fleeingActive && !runtimeState.emergencyRetreating) features.clearNavigation('combat-ended')
       features.log('combat ended', { target: name, id: threat.id, killed })
       if (killed && closeCombatPlan()) runtimeState.urgentThreatQueued = true
       if (!killed) lastUnreachedHostile = { id: threat.id, until: Date.now() + 6000 }
@@ -493,7 +497,7 @@ function createCombat(runtimeState, features) {
       if (threat?.id != null) ids.add(threat.id)
       let pursuit = retreatPursuits.get(connection)
       if (!pursuit || Date.now() - pursuit.updated > 16000 || ![...ids].some(id => pursuit.ids.has(id))) {
-        pursuit = { started: Date.now(), updated: Date.now(), goals: 0, ids }
+        pursuit = { started: Date.now(), updated: Date.now(), goals: 0, ids, failed: new Map() }
         retreatPursuits.set(connection, pursuit)
       } else {
         pursuit.updated = Date.now()
@@ -511,7 +515,7 @@ function createCombat(runtimeState, features) {
       const angle = delta.x || delta.z ? Math.atan2(delta.z, delta.x) : 0
       const modelTarget = features.clampModelTarget(modelDecision?.target, origin, 14)
       const candidates = modelTarget ? [modelTarget] : []
-      for (const distance of [12, 8, 5]) {
+      for (const distance of [12, 8, 5, 3]) {
         for (const turn of [0, Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2, Math.PI]) {
           candidates.push({
             x: origin.x + Math.round(Math.cos(angle + turn) * distance),
@@ -520,40 +524,74 @@ function createCombat(runtimeState, features) {
         }
       }
 
-      const safe = candidates.filter(target => {
-        if (Math.hypot(target.x - origin.x, target.z - origin.z) < 5) return false
-        if (threats.length && closestDistance(target) < closestDistance(origin) + 1) return false
-        return [-2, -1, 0, 1, 2].some(dy => {
+      const safe = []
+      const seen = new Set()
+      for (const target of candidates) {
+        if (Math.hypot(target.x - origin.x, target.z - origin.z) < 3 ||
+            (threats.length && closestDistance(target) < closestDistance(origin) + 1)) continue
+        for (const dy of [0, 1, -1, 2, -2]) {
           const feet = new Vec3(target.x, origin.y + dy, target.z)
-          const floor = connection.blockAt(feet.offset(0, -1, 0))
-          return floor?.boundingBox === 'block' && !/cactus|magma|campfire/.test(floor.name) &&
-            EMPTY_BLOCK.test(connection.blockAt(feet)?.name) &&
-            EMPTY_BLOCK.test(connection.blockAt(feet.offset(0, 1, 0))?.name)
-        })
-      }).sort((a, b) => threats.length ? closestDistance(b) - closestDistance(a) : 0)
-
-      for (const target of safe.slice(0, 4)) {
-        while (connection === runtimeState.bot && runtimeState.impactGuards.has(connection)) {
-          await new Promise(resolve => setTimeout(resolve, 60))
+          if (seen.has(feet.toString()) || !dryFooting(connection, feet) ||
+              connection.blockAt(feet.offset(0, -1, 0))?.boundingBox !== 'block' ||
+              !EMPTY_BLOCK.test(connection.blockAt(feet)?.name) ||
+              !EMPTY_BLOCK.test(connection.blockAt(feet.offset(0, 1, 0))?.name)) continue
+          seen.add(feet.toString())
+          safe.push(feet)
+          break
         }
+      }
+      safe.sort((a, b) => Math.abs(a.distanceTo(origin) - 6) - Math.abs(b.distanceTo(origin) - 6) ||
+        closestDistance(b) - closestDistance(a))
+
+      const walking = new Movements(connection, runtimeState.mcData)
+      walking.canDig = false
+      walking.allow1by1towers = false
+      walking.allowParkour = false
+      walking.scafoldingBlocks = []
+      walking.maxDropDown = 3
+      walking.infiniteLiquidDropdownDistance = false
+      avoidWetCorners(walking, connection)
+      avoidWetSteps(walking, connection)
+      let deadline = performance.now() + 230
+      for (const target of safe.slice(0, 14)) {
+        if (performance.now() >= deadline) break
         if (runtimeState.bot !== connection || connection.health <= 0 || features.waterOwnsMovement()) break
-        runtimeState.navigationState = { target, waypoints: [], label: 'flee' }
+        if ((pursuit.failed.get(target.toString()) || 0) > Date.now()) continue
+        const goal = new goals.GoalBlock(target.x, target.y, target.z)
+        const search = connection.pathfinder.getPathFromTo(walking, connection.entity.position, goal, {
+          timeout: 30, tickTimeout: 18, searchRadius: 18, optimizePath: false,
+        })
+        let preview
+        try {
+          preview = search.next().value?.result
+        } finally {
+          search.return()
+        }
+        if (preview?.status !== 'success' || !preview.path.length || pathHazard(connection, preview.path)) continue
+        if (runtimeState.impactGuards.has(connection)) break
+        const previous = connection.pathfinder.movements
+        connection.pathfinder.setMovements(walking)
+        runtimeState.navigationState = { target, waypoints: preview.path, label: 'flee' }
         features.log('fleeing', { target, threat: features.entityNameOf(threat) || null, reason: modelDecision?.reason || '' })
         try {
-          if (await gotoRetreatWaypoint(connection, target, onAdvance)) return true
+          if (await gotoRetreatWaypoint(connection, goal, target, onAdvance)) return true
           pursuit.goals += 1
           pursuit.updated = Date.now()
           features.log('retreat waypoint reached', { target, position: connection.entity.position.floored() })
           return true
         } catch (error) {
           features.log('retreat route interrupted', { target, message: error.message })
+          pursuit.failed.set(target.toString(), Date.now() + 10000)
+          if (connection.entity?.position.distanceTo(origin.offset(0.5, 0, 0.5)) > 1.5) return true
+          deadline = performance.now() + 130
+        } finally {
+          if (connection.pathfinder.movements === walking) connection.pathfinder.setMovements(previous)
         }
       }
       return false
   }
 
-  async function gotoRetreatWaypoint(connection, target, onAdvance) {
-    const goal = new goals.GoalNearXZ(target.x, target.z, 1)
+  async function gotoRetreatWaypoint(connection, goal, target, onAdvance) {
     let lastPosition = connection.entity.position.clone()
     let lastProgress = Date.now()
     let pausedForShot = false
@@ -572,7 +610,10 @@ function createCombat(runtimeState, features) {
       }
     }, 125)
     try {
-      await features.gotoWithTimeout(goal, 'flee', 4200)
+      await features.gotoWithTimeout(goal, 'flee', 4200, {
+        allowClutch: false,
+        validateRoute: (path, options) => pathHazard(connection, path, options),
+      })
     } catch (error) {
       if (!pausedForShot) throw error
     } finally {

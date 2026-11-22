@@ -16,6 +16,7 @@ function createCombatInterruption(state, features) {
       order: state.currentMineOrder, target: state.committedMineTarget, names: state.mineTargetNames,
     }
     paused.set(connection, saved)
+    if (digging) features.interruptMiningForCombat(connection)
     if (!observed.has(connection)) {
       observed.add(connection)
       connection.on('death', () => paused.delete(connection))
@@ -28,7 +29,7 @@ function createCombatInterruption(state, features) {
   async function resumeCombatTask() {
     const connection = state.bot
     const saved = paused.get(connection)
-    if (!saved) return false
+    if (!saved || state.fleeingActive || state.emergencyRetreating || Date.now() < state.retreatUntil || features.closeCombatPlan()) return false
     if (connection.game?.dimension !== saved.dimension || connection.health <= 0 || Date.now() - saved.time > 120000) {
       paused.delete(connection)
       return false
