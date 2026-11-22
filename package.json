@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "agent": "node agent.js",
+    "nmo:workbench": "node agent/nmo-workbench.js",
+    "test:nmo-workbench": "node --test scripts/test-nmo-workbench.js",
     "build:creative": "node scripts/build-creative.js",
     "test:creative-build": "node scripts/test-creative-build.js",
     "test:syntax": "node scripts/check-agent-syntax.js"
