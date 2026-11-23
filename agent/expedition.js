@@ -38,12 +38,17 @@ function retreatReason(status) {
 }
 
 function createVillageExpedition(api) {
-  let state = { phase: 'preparing', room: null, spawn: null, reason: null, route: [], lastRoute: [], landmarks: [],
-    visited: [], base: null, village: null, returnIndex: 0, steps: 0, nextAfter: 0, entered: false, villageAction: null }
+  const initialState = (base = null) => ({ phase: 'preparing', room: null, spawn: null, reason: null,
+    route: [], lastRoute: [], returnRoute: [], lastReturnRoute: [], landmarks: [], visited: [], base, village: null,
+    returnIndex: 0, returnRetry: null, steps: 0, nextAfter: 0, entered: false, villageAction: null })
+  let state = initialState()
   try {
     const saved = JSON.parse(fs.readFileSync(api.statePath, 'utf8'))
     if (saved.version === 1 && saved.world === api.world && PHASES.has(saved.phase) && isPosition(saved.base)) {
       state = { ...state, ...saved, route: (saved.route || []).filter(isPosition), lastRoute: (saved.lastRoute || []).filter(isPosition),
+        returnRoute: Array.isArray(saved.returnRoute) ? saved.returnRoute.filter(isPosition) : [],
+        lastReturnRoute: Array.isArray(saved.lastReturnRoute) ? saved.lastReturnRoute.filter(isPosition) : [],
+        returnRetry: Number.isSafeInteger(saved.returnRetry) ? saved.returnRetry : null,
         room: isPosition(saved.room) ? saved.room : null, spawn: isPosition(saved.spawn) ? saved.spawn : null,
         legacyRoom: isPosition(saved.legacyRoom) ? saved.legacyRoom : null,
         village: isPosition(saved.village) ? saved.village : null,
@@ -90,10 +95,11 @@ function createVillageExpedition(api) {
     api.log('expedition landmark recorded', landmark)
   }
 
-  function routePoint(position) {
-    const last = state.route.at(-1)
-    if (last && vector(last).distanceTo(position) < 6) return
-    state.route.push(pos(position))
+  function routePoint(route, position, endpoint = false) {
+    const last = route.at(-1)
+    const point = position.floored()
+    if (last && (vector(last).equals(point) || (!endpoint && vector(last).distanceTo(position) < 6))) return
+    route.push(pos(point))
     persist()
   }
 
@@ -119,32 +125,37 @@ function createVillageExpedition(api) {
   }
 
   function beginReturn(bot, reason) {
-    routePoint(bot.entity.position)
+    routePoint(state.route, bot.entity.position)
     state.returnIndex = state.route.length - 1
+    state.returnRetry = null
+    state.returnRoute = [pos(bot.entity.position)]
     update('returning', reason)
   }
 
-  async function recordTravel(bot, action) {
-    const remember = () => { if (bot.entity?.position) routePoint(bot.entity.position) }
+  async function recordTravel(bot, action, route) {
+    const remember = () => { if (bot.entity?.position) routePoint(route, bot.entity.position) }
     bot.on('move', remember)
     try { return await action() }
     finally { bot.removeListener('move', remember); remember() }
   }
 
-  async function move(bot, target, returning, signal = null) {
+  async function move(bot, target, returning, signal = null, recoverStep = false) {
     const goal = returning ? new goals.GoalNear(target.x, target.y, target.z, 2) : new goals.GoalNearXZ(target.x, target.z, 3)
+    if (returning) {
+      const withinRange = goal.isEnd.bind(goal)
+      goal.isEnd = position => Math.abs(position.y - target.y) <= 1 && withinRange(position)
+    }
     const watch = setInterval(() => {
       if (bot.pathfinder.goal === goal && (!api.safe(bot) || signal?.())) bot.pathfinder.setGoal(null)
     }, 250)
     try {
-      const travel = () => api.travel(bot, goal, returning ? 'expedition return waypoint' : 'expedition scout', 17000)
-      if (returning) await travel()
-      else await recordTravel(bot, travel)
-      return goal.isEnd(bot.entity.position.floored())
+      const travel = () => api.travel(bot, goal, returning ? 'expedition return waypoint' : 'expedition scout', 17000,
+        { returnWaypoint: returning, recoverStep })
+      await recordTravel(bot, travel, returning ? state.returnRoute : state.route)
     } catch (error) {
       api.log('expedition path deferred', { target, returning, message: error.message })
-      return false
     } finally { clearInterval(watch) }
+    return Boolean(bot.entity?.position && goal.isEnd(bot.entity.position.floored()))
   }
 
   function targetsFor(bot, base) {
@@ -241,19 +252,45 @@ function createVillageExpedition(api) {
       if (!stop) return true
       beginReturn(bot, stop)
     }
+    routePoint(state.returnRoute, bot.entity.position)
     if (!nearBase(bot, base) && api.foodReserve() && bot.food < 16) await api.eat()
     const until = Date.now() + 11000
     for (let segment = 0; segment < 4 && Date.now() < until && api.safe(bot) && !nearBase(bot, base); segment++) {
-      state.returnIndex = Math.min(Number.isSafeInteger(state.returnIndex) ? state.returnIndex : state.route.length - 1, state.route.length - 1)
-      while (state.returnIndex >= 0 && bot.entity.position.distanceTo(vector(state.route[state.returnIndex])) <= 4) state.returnIndex--
+      const index = Number.isSafeInteger(state.returnIndex) ? state.returnIndex : state.route.length - 1
+      state.returnIndex = Math.max(-1, Math.min(index, state.route.length - 1))
+      const before = bot.entity.position.floored()
+      while (state.returnIndex >= 0) {
+        const waypoint = vector(state.route[state.returnIndex])
+        if (Math.abs(before.y - waypoint.y) > 1 || before.distanceTo(waypoint) > 4) break
+        state.returnIndex--
+      }
       const next = state.returnIndex >= 0 ? vector(state.route[state.returnIndex]) : base.offset(0, 0, 2)
-      const before = bot.entity.position.distanceTo(next)
-      const reached = await move(bot, next, true)
-      if (reached || (state.returnIndex >= 0 && api.safe(bot) && bot.entity.position.distanceTo(next) >= before - 0.75)) state.returnIndex--
+      const retrying = state.returnRetry === state.returnIndex
+      const reached = await move(bot, next, true, null, retrying)
+      if (!api.safe(bot) || !bot.entity?.position) {
+        persist()
+        break
+      }
+      const stationary = before.equals(bot.entity.position.floored())
+      if (reached || !stationary) state.returnRetry = null
+      if (reached && state.returnIndex >= 0) state.returnIndex--
+      if (!reached && stationary) {
+        if (retrying && state.returnIndex >= 0) {
+          api.log('expedition blocked return waypoint bypassed', { target: next, origin: before })
+          state.returnIndex--
+          state.returnRetry = null
+        } else {
+          state.returnRetry = state.returnIndex
+        }
+      }
       persist()
       if (!reached) break
     }
-    if (nearBase(bot, base)) {
+    if (api.safe(bot) && bot.entity?.position && nearBase(bot, base)) {
+      routePoint(state.returnRoute, bot.entity.position, true)
+      if (state.returnRoute.length > 1) state.lastReturnRoute = state.returnRoute
+      state.returnRoute = []
+      state.returnRetry = null
       state.lastRoute = state.route
       state.route = []
       state.nextAfter = Date.now() + 90000
@@ -266,8 +303,7 @@ function createVillageExpedition(api) {
 
   async function prepare(bot, base, services) {
     if (!sameBase(base)) {
-      state = { phase: 'preparing', room: null, spawn: null, reason: null, route: [], lastRoute: [], landmarks: [],
-        visited: [], base: pos(base), village: null, returnIndex: 0, steps: 0, nextAfter: 0, entered: false, villageAction: null }
+      state = initialState(pos(base))
       persist()
     }
     const room = await shelter.prepare(bot, state, base, services)
@@ -312,7 +348,8 @@ function createVillageExpedition(api) {
     leave: bot => shelter.leave(bot, state),
     status: () => ({ phase: state.phase, reason: state.reason, room: state.room, spawn: state.spawn,
       hut: shelter.status(state),
-      village: state.village, villageAction: state.villageAction, landmarks: state.landmarks, route: state.route, lastRoute: state.lastRoute }) }
+      village: state.village, villageAction: state.villageAction, landmarks: state.landmarks, route: state.route, lastRoute: state.lastRoute,
+      returnRoute: state.returnRoute, lastReturnRoute: state.lastReturnRoute }) }
 }
 
 module.exports = { createVillageExpedition, expeditionReadiness, retreatReason }

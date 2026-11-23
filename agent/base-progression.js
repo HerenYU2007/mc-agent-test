@@ -1,5 +1,6 @@
 const path = require('node:path')
 const { Movements } = require('mineflayer-pathfinder')
+const { Vec3 } = require('vec3')
 const { createSupplyBase } = require('../supply-base')
 const { createVillageExpedition } = require('./expedition')
 const { createBaseFarm } = require('./base-farm')
@@ -64,16 +65,59 @@ function createBaseProgression(runtimeState, features) {
         await features.mineForGear(null, objective.kind, null, { objective })
       },
     }
-    const travel = async (connection, goal, label, timeout) => {
+    const blockedReturnSteps = new WeakMap()
+    const travel = async (connection, goal, label, timeout, { returnWaypoint = false, recoverStep = false } = {}) => {
+      const origin = returnWaypoint ? connection.entity.position.floored() : null
       const walking = new ExpeditionMovements(connection)
       walking.canDig = false
       walking.allow1by1towers = false
       walking.allowParkour = false
       walking.maxDropDown = 2
       walking.scafoldingBlocks = []
+      const blocked = blockedReturnSteps.get(connection)
+      if (recoverStep && blocked?.origin.equals(origin) && blocked.until > Date.now()) {
+        const neighbors = walking.getNeighbors.bind(walking)
+        walking.getNeighbors = node => {
+          const candidates = neighbors(node)
+          return origin.equals(node) ? candidates.filter(next => !blocked.step.equals(next)) : candidates
+        }
+      }
       connection.pathfinder.setMovements(walking)
-      try { await api.goto(goal, label, timeout, { allowClutch: true }) }
-      finally {
+      let firstStep
+      let corrections = 0
+      const stillAtOrigin = () => connection.entity?.position.floored().equals(origin)
+      const rememberFirstStep = result => {
+        if (connection.pathfinder.goal !== goal || !stillAtOrigin()) return
+        const node = result.path?.find(point => !origin.equals(new Vec3(point.x, point.y, point.z).floored()))
+        if (!node || node.toBreak?.length || node.toPlace?.length) return
+        const step = new Vec3(node.x, node.y, node.z).floored()
+        if (Math.abs(step.y - origin.y) <= 1 && Math.max(Math.abs(step.x - origin.x), Math.abs(step.z - origin.z)) === 1 &&
+            !firstStep?.equals(step)) {
+          firstStep = step
+          corrections = 0
+        }
+      }
+      const onCorrection = () => {
+        if (connection.pathfinder.goal !== goal || !firstStep || !stillAtOrigin()) return
+        if (++corrections >= 3) connection.pathfinder.setGoal(null)
+      }
+      if (returnWaypoint) {
+        connection.on('path_update', rememberFirstStep)
+        connection.on('forcedMove', onCorrection)
+      }
+      try {
+        await api.goto(goal, label, timeout, { allowClutch: !recoverStep })
+      } catch (error) {
+        if (firstStep && api.safe(connection) && stillAtOrigin()) {
+          blockedReturnSteps.set(connection, { origin, step: firstStep, until: Date.now() + 60000 })
+          api.log('expedition return first step blocked', { origin, step: firstStep, corrections })
+        }
+        throw error
+      } finally {
+        if (returnWaypoint) {
+          connection.off('path_update', rememberFirstStep)
+          connection.off('forcedMove', onCorrection)
+        }
         if (connection === runtimeState.bot) {
           if (connection.pathfinder.goal === goal) connection.pathfinder.setGoal(null)
           connection.pathfinder.setMovements(runtimeState.movements)

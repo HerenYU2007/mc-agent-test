@@ -36,7 +36,117 @@ function setup(name, health, village = false) {
   return { bot, api, route, visited, logs }
 }
 
+async function testBlockedReturn() {
+  const route = [[10, 70, 20], [20, 70, 20], [30, 70, 20], [40, 70, 20]]
+  const stalled = setup('stalled-return', 20)
+  const checkpoint = { version: 1, world: 'test', phase: 'returning', reason: 'nightfall',
+    base: [10, 70, 20], route, returnIndex: 2 }
+  fs.writeFileSync(stalled.api.statePath, JSON.stringify(checkpoint))
+  const attempts = []
+  stalled.api.travel = async (_, goal, label, timeout, options) => {
+    assert.equal(options.returnWaypoint, true)
+    attempts.push([goal.x, options.recoverStep])
+    if (goal.x === 30) throw new Error('blocked step')
+    stalled.bot.entity.position = point(goal.x, goal.y, goal.z)
+  }
+  const read = () => JSON.parse(fs.readFileSync(stalled.api.statePath, 'utf8'))
+  const expedition = createVillageExpedition(stalled.api)
+  await expedition.continueTrip(stalled.bot, origin)
+  assert.equal(read().returnIndex, 2)
+  assert.equal(read().returnRetry, 2)
+  const resumed = createVillageExpedition(stalled.api)
+  await resumed.continueTrip(stalled.bot, origin)
+  assert.deepEqual(attempts, [[30, false], [30, true]])
+  assert.equal(read().returnIndex, 1)
+  assert(stalled.logs.some(log => log.event === 'expedition blocked return waypoint bypassed'))
+  await resumed.continueTrip(stalled.bot, origin)
+  assert.equal(resumed.status().phase, 'awaiting-resupply')
+  assert.deepEqual(resumed.status().lastReturnRoute, [[40, 69, 20], [20, 70, 20], [10, 70, 20]])
+
+  const detour = setup('return-detour', 20)
+  fs.writeFileSync(detour.api.statePath, JSON.stringify(checkpoint))
+  detour.api.travel = async (_, goal) => {
+    assert(!goal.isEnd(point(30, 72, 20)), '另一层不能当成到达')
+    detour.bot.entity.position = point(44, 70, 27)
+    detour.bot.emit('move')
+    throw new Error('still detouring')
+  }
+  const detoured = createVillageExpedition(detour.api)
+  await detoured.continueTrip(detour.bot, origin)
+  const pending = JSON.parse(fs.readFileSync(detour.api.statePath, 'utf8'))
+  assert.equal(pending.returnRetry, null)
+  assert.equal(pending.returnIndex, 2)
+  assert.deepEqual(detoured.status().returnRoute.at(-1), [44, 70, 27])
+}
+
+async function testBlockedFirstStep() {
+  const createBaseProgression = require('../agent/base-progression')
+  const { HOST, PORT, USERNAME } = require('../agent/config')
+  const registry = require('prismarine-registry')('1.21.11')
+  const Block = require('prismarine-block')(registry)
+  const Move = require('mineflayer-pathfinder/lib/move')
+  const { bot } = setup('base-first-step', 20)
+  const start = point(40, 69, 20)
+  const badStep = start.offset(-1, 0, 0)
+  const otherStep = start.offset(0, 0, -1)
+  const world = JSON.stringify([HOST, PORT, USERNAME])
+  const baseFile = path.join(work, 'base-first-step.json')
+  fs.writeFileSync(baseFile, JSON.stringify({ version: 2, world, position: [10, 69, 20],
+    qualificationDiamonds: 10, unlocked: true }))
+  fs.writeFileSync(baseFile + '.expedition.jsonl', JSON.stringify({ version: 1, world, phase: 'returning',
+    base: [10, 69, 20], returnIndex: 1, route: [[10, 69, 20], [30, 69, 20], [40, 69, 20]] }))
+  bot.registry = registry
+  bot.blockAt = position => {
+    const data = registry.blocksByName[position.y < start.y ? 'stone' : 'air']
+    const block = Block.fromStateId(data.defaultState, 0)
+    block.position = position
+    return block
+  }
+  bot.pathfinder.setGoal = goal => { bot.pathfinder.goal = goal }
+  bot.pathfinder.setMovements = movements => { bot.pathfinder.movements = movements }
+  const initialMovements = {}
+  const state = { bot, movements: initialMovements }
+  const runs = []
+  const log = []
+  let firstGoalCanceled = false
+  const features = { canWorkHere: () => true, damageInterruptActive: () => false, closeCombatPlan: () => null,
+    toolDurability: () => 100, foodReserve: () => 8, log: event => log.push(event), gotoWithTimeout: async (goal, label, ms, options) => {
+      bot.pathfinder.setGoal(goal)
+      if (bot.entity.position.equals(start)) {
+        const neighbors = bot.pathfinder.movements.getNeighbors(new Move(start.x, start.y, start.z, 0, 0))
+        runs.push({ bad: neighbors.some(step => badStep.equals(step)), alternate: neighbors.some(step => otherStep.equals(step)),
+          clutch: options.allowClutch })
+        if (runs.length === 1) {
+          bot.emit('path_update', { path: [badStep] })
+          for (let i = 0; i < 3; i++) bot.emit('forcedMove')
+          firstGoalCanceled = bot.pathfinder.goal === null
+          throw new Error('test server rejected the first step')
+        }
+      }
+      bot.entity.position = point(goal.x, goal.y, goal.z)
+    } }
+  const previousBase = process.env.MC_BASE_STATE_PATH
+  const previousExpedition = process.env.MC_EXPEDITION_STATE_PATH
+  process.env.MC_BASE_STATE_PATH = baseFile
+  delete process.env.MC_EXPEDITION_STATE_PATH
+  try { createBaseProgression(state, features).initializeSupplyBase() }
+  finally {
+    if (previousBase === undefined) delete process.env.MC_BASE_STATE_PATH
+    else process.env.MC_BASE_STATE_PATH = previousBase
+    if (previousExpedition !== undefined) process.env.MC_EXPEDITION_STATE_PATH = previousExpedition
+  }
+  await state.supplyBase.run(bot)
+  await state.supplyBase.run(bot)
+  assert.deepEqual(runs, [{ bad: true, alternate: true, clutch: true }, { bad: false, alternate: true, clutch: false }])
+  assert.equal(firstGoalCanceled, true)
+  assert(log.includes('expedition return first step blocked'))
+  assert.equal(bot.pathfinder.movements, initialMovements)
+  assert.equal(state.supplyBase.status().expedition.phase, 'awaiting-resupply')
+}
+
 async function test() {
+  await testBlockedFirstStep()
+  await testBlockedReturn()
   const front = point(0, 0, 1)
   const layout = shelterGeometry({ center: origin, front, entry: origin.plus(front.scaled(3)), supports: [] })
   assert.equal(layout.cells.length, 80)

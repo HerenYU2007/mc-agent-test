@@ -80,7 +80,11 @@ async function testInterruption() {
   const state = { bot: connection, impactGuards: new WeakSet(), navigationState: { target: { x: 30, z: 4 }, label: 'explore' } }
   const calls = []
   const features = { log() {}, closeCombatPlan: () => null,
-    gotoWithTimeout: async goal => { calls.push(goal) } }
+    gotoWithTimeout: async goal => { calls.push(goal) },
+    interruptMiningForCombat: bot => {
+      assert.equal(bot, connection)
+      state.mineMode = false
+    } }
   const actions = createCombatInterruption(state, features)
   actions.pauseCombatTask(connection)
   connection.pathfinder.goal = { isEnd: () => false }
@@ -97,7 +101,7 @@ async function testInterruption() {
   state.committedMineTarget = target
   state.mineTargetNames = new Set(['diamond_ore'])
   actions.pauseCombatTask(connection)
-  state.mineMode = false
+  assert.equal(state.mineMode, false)
   state.committedMineTarget = null
   assert.equal(await actions.resumeCombatTask(), true)
   assert.equal(state.mineMode, true)

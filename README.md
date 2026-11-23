@@ -24,6 +24,10 @@ Windows 也可双击 `1-启动服务端.bat`、`2-启动Agent.bat`。要连接�
 
 打开 [本地监控面板](http://127.0.0.1:3001/) 查看实时状态。DeepSeek 默认关闭，启用时使用官方 `https://api.deepseek.com/chat/completions` 和 `deepseek-flash`。在本地 `.env` 或进程环境里设置 `DEEPSEEK_API_KEY`，再通过面板开启，或设置 `DEEPSEEK_AUTO_START=1`。暂停 Bot 会同时关闭模型。比赛环境如需使用统一代理，可按规则配置 `DEEPSEEK_URL` 和 `DEEPSEEK_MODEL`。
 
+面板里的「附近村庄」接收 **Java 1.21.11 默认主世界**的数字种子和基地 X/Z。已有基地坐标会自动填入，也可手动修改。查询按水平距离列出 12,288 格内最多 5 个候选，Bot 断开、模型关闭时也能用。生成器在本机运行。改过结构盐值、生成规则或沿用旧地图的服务器，结果需要进游戏核对。
+
+村庄生成器随项目提供 WebAssembly 和 MIT 许可。需要重编译时，安装 Zig 0.15.2，将 [Cubiomes](https://github.com/Cubitect/cubiomes/pull/162) 源码检出到 `ca9fcb4e2b4f29a88b15a19fe1f00a73bf503ec2`，再运行 `node scripts/build-village-locator.cjs <Cubiomes 源码目录>`。
+
 ## 遥测和原生旁观
 
 测试服生成世界后，可安装 [遥测数据包](datapacks/nmo-telemetry/README.md)，随后在服务器控制台运行 `reload`。Fabric 旁观 Mod 和网页面板可直接从 Agent 读取遥测。

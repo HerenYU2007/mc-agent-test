@@ -1,6 +1,7 @@
 const http = require('node:http')
 const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
+const { handleVillageLookup } = require('./village-locator')
 const {
   VERSION, DASHBOARD_PORT, DEEPSEEK_API_KEY, DEEPSEEK_MODEL, LOG_NAMES, IRON_INPUT_NAMES,
 } = require('./config')
@@ -13,6 +14,10 @@ function createDashboard(runtimeState, features) {
     dashboardStarted = true
     const page = readFileSync(join(__dirname, 'dashboard.html'))
     const server = http.createServer((req, res) => {
+      if (req.url === '/villages' && req.method === 'POST') {
+        void handleVillageLookup(req, res)
+        return
+      }
       if (req.url === '/control' && req.method === 'POST') {
         let body = ''
         req.on('data', chunk => { body += chunk })
