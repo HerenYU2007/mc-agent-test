@@ -3,6 +3,8 @@ const { nearbyHostiles, threatNear } = require('./movement-safety')
 const { WATER_BLOCK_NAMES, EMPTY_BLOCK, TUNNEL_SAFE_BLOCKS } = require('./config')
 
 const PLACED_SUPPORT = /(cobblestone|_planks|_slab|_stairs|crafting_table|furnace|scaffolding)$/
+const SURFACE_OXYGEN = 12
+const RECOVERED_OXYGEN = 18
 
 function createSwimming(runtimeState, features) {
   let swimDrySince = 0
@@ -26,11 +28,13 @@ function createSwimming(runtimeState, features) {
 
   let lastStrandCheckAt = 0
 
-  let lastSwimLogAt = 0
+  let surfacingBot = null
   let lastLanding = null
 
   function waterSurfaceY(connection, origin) {
     let surface = origin.y
+    if (!features.isWaterBlock(connection.blockAt(origin)) &&
+        features.isWaterBlock(connection.blockAt(origin.offset(0, -1, 0)))) surface -= 1
     while (surface - origin.y < 48 && features.isWaterBlock(connection.blockAt(new Vec3(origin.x, surface + 1, origin.z)))) surface += 1
     return surface
   }
@@ -65,7 +69,8 @@ function createSwimming(runtimeState, features) {
           })
           if (!edge) continue
           const distance = runtimeState.bot.entity.position.distanceTo(position) +
-            2 * Math.max(0, y - origin.y - 1) + (threatNear(position, threats, 6) ? 16 : 0)
+            2 * Math.max(0, y - origin.y - 1) + 3 * Math.max(0, y - surface - 1) +
+            (threatNear(position, threats, 6) ? 16 : 0)
           if (distance < bestDistance) {
             best = position
             bestDistance = distance
@@ -86,7 +91,7 @@ function createSwimming(runtimeState, features) {
       let finished = false
       void dig.then(() => { finished = true }, () => { finished = true })
       while (!finished && connection === runtimeState.bot && connection.health > 0 &&
-             Number(connection.oxygenLevel ?? 20) > 6 && Date.now() < deadline) {
+             Number(connection.oxygenLevel ?? 20) >= SURFACE_OXYGEN && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 100))
       }
       if (!finished && connection.targetDigBlock?.position.equals(lip.position)) connection.stopDigging()
@@ -262,15 +267,27 @@ function createSwimming(runtimeState, features) {
         features.isWaterClutchActive()) return
     const now = Date.now()
     const inWater = isActuallyInWater()
+    const connection = runtimeState.bot
+    const oxygen = Number(connection.oxygenLevel ?? 20)
+    if (surfacingBot === connection && oxygen >= RECOVERED_OXYGEN) {
+      surfacingBot = null
+      if (runtimeState.swimProgress) runtimeState.swimProgress.at = now
+    } else if (inWater && oxygen < SURFACE_OXYGEN && surfacingBot !== connection) {
+      surfacingBot = connection
+      features.log('low oxygen; surfacing', { oxygen })
+    }
+    const surfacing = surfacingBot === connection
     if (swimOverride && (swimOverrideConnection !== runtimeState.bot || now > swimOverrideUntil)) swimOverride = null
     if ((inWater || runtimeState.swimmingMode) && features.isSwimmingArrowGuardActive?.(runtimeState.bot)) {
       // Preserve the bank target and let the shield hold its aim while we stay afloat.
       if (runtimeState.swimProgress) runtimeState.swimProgress.at = now
+      if (surfacing) connection.setControlState('forward', false)
       runtimeState.bot.setControlState('jump', true)
       return
     }
     if (!inWater) {
       if (!runtimeState.swimmingMode) {
+        if (surfacing) surfacingBot = null
         if (swimOverride && runtimeState.bot.entity.position.distanceTo(swimOverride) <= 3) swimOverride = null
         return
       }
@@ -304,6 +321,7 @@ function createSwimming(runtimeState, features) {
         runtimeState.bot.setControlState('sprint', false)
       }
       if (swimDrySince && now - swimDrySince >= 550) {
+        if (surfacing) surfacingBot = null
         runtimeState.bot.clearControlStates()
         runtimeState.swimmingMode = false
         failedShores.clear()
@@ -320,7 +338,10 @@ function createSwimming(runtimeState, features) {
         lastLanding = { connection: runtimeState.bot, feet: runtimeState.bot.entity.position.floored() }
         setImmediate(() => void features.decideAndAct('landed'))
       } else {
-        runtimeState.bot.setControlState('jump', false)
+        const shore = runtimeState.swimShore
+        const nearShore = shore && Math.hypot(shore.x + 0.5 - connection.entity.position.x,
+          shore.z + 0.5 - connection.entity.position.z) < 2.5
+        connection.setControlState('jump', Boolean(!standing && (surfacing || nearShore)))
       }
       return
     }
@@ -350,11 +371,20 @@ function createSwimming(runtimeState, features) {
       }
     }
 
-    const oxygen = Number(runtimeState.bot.oxygenLevel ?? 20)
+    if (surfacing) {
+      if (runtimeState.swimProgress) runtimeState.swimProgress.at = now
+      if (swimBankDig?.connection === connection && connection.targetDigBlock?.position.equals(swimBankDig.position)) {
+        connection.stopDigging()
+      }
+      connection.setControlState('forward', false)
+      connection.setControlState('sprint', false)
+      connection.setControlState('jump', true)
+      void connection.look(connection.entity.yaw, 1.1, true).catch(() => {})
+      return
+    }
     if (swimBankDig?.connection === runtimeState.bot) {
       runtimeState.bot.setControlState('jump', true)
       runtimeState.bot.setControlState('forward', false)
-      if (oxygen <= 6 && runtimeState.bot.targetDigBlock?.position.equals(swimBankDig.position)) runtimeState.bot.stopDigging()
       return
     }
     const position = runtimeState.bot.entity.position
@@ -362,7 +392,7 @@ function createSwimming(runtimeState, features) {
     if (runtimeState.swimShore && runtimeState.swimProgress && horizontalRemaining + 0.4 < runtimeState.swimProgress.distance) {
       runtimeState.swimProgress = { distance: horizontalRemaining, at: now }
     }
-    if (runtimeState.swimShore && runtimeState.swimProgress && oxygen > 9 && now >= nextSwimBankDigAt &&
+    if (runtimeState.swimShore && runtimeState.swimProgress && oxygen >= RECOVERED_OXYGEN && now >= nextSwimBankDigAt &&
         now - runtimeState.swimProgress.at >= 1300 && horizontalRemaining < 3) {
       const feet = position.floored()
       const lip = runtimeState.bot.blockAt(runtimeState.swimShore.offset(0, -1, 0))
@@ -377,7 +407,7 @@ function createSwimming(runtimeState, features) {
         return
       }
     }
-    if (runtimeState.swimShore && runtimeState.swimProgress && now - runtimeState.swimProgress.at > (swimOverride ? 7000 : 3000) && oxygen > 6) {
+    if (runtimeState.swimShore && runtimeState.swimProgress && now - runtimeState.swimProgress.at > (swimOverride ? 7000 : 3000)) {
       rememberFailedShore(runtimeState.swimShore, now)
       features.log('swim shore blocked; trying another exit', { shore: runtimeState.swimShore })
       swimOverride = null
@@ -397,18 +427,11 @@ function createSwimming(runtimeState, features) {
       if (runtimeState.swimShore) features.log('swim shore selected', { position: runtimeState.swimShore })
     }
     runtimeState.bot.setControlState('sprint', true)
-    runtimeState.bot.setControlState('forward', oxygen > 6)
-    runtimeState.bot.setControlState('jump', oxygen <= 6 || !runtimeState.swimShore ||
+    runtimeState.bot.setControlState('forward', Boolean(runtimeState.swimShore))
+    runtimeState.bot.setControlState('jump', !runtimeState.swimShore ||
       position.y < runtimeState.swimShore.y - 1.4 || horizontalRemaining < 2.5)
 
-    if (oxygen <= 6) {
-      // Hold the head upward and keep jumping until the oxygen bar recovers.
-      void runtimeState.bot.look(runtimeState.bot.entity.yaw, 1.1, true).catch(() => {})
-      if (Date.now() - lastSwimLogAt > 2000) {
-        lastSwimLogAt = Date.now()
-        features.log('low oxygen; surfacing', { oxygen })
-      }
-    } else if (runtimeState.swimShore) {
+    if (runtimeState.swimShore) {
       const dx = runtimeState.swimShore.x + 0.5 - position.x
       const dz = runtimeState.swimShore.z + 0.5 - position.z
       const pitch = position.y < runtimeState.swimShore.y - 1.2 ? 0.32 : 0

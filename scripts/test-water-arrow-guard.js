@@ -26,6 +26,7 @@ function fixture(compact = false) {
     activateItem(offhand) { assert.equal(offhand, true); this.usingHeldItem = true },
     deactivateItem() { this.usingHeldItem = false },
     setControlState: (key, value) => controls.set(key, value),
+    look: async () => {},
     lookAt: async () => { events.looks++ },
   })
   const state = { bot, botEnabled: true, swimmingMode: true, impactGuards: new WeakSet(), raisedShields: new WeakMap(),
@@ -86,4 +87,22 @@ test('低氧或正在落地水时，不会夺取移动控制去挡箭', async ()
     assert.equal(f.events.looks, 0)
     assert.equal(f.features.isSwimmingArrowGuardActive(f.bot), false)
   }
+})
+
+test('氧气低于 12 时上浮，恢复到 18 后才恢复找岸', () => {
+  const f = fixture()
+  const swim = createSwimming(f.state, f.features)
+  const shore = f.state.swimShore
+  f.bot.oxygenLevel = 11
+  swim.monitorSwimming()
+  assert.equal(f.controls.get('jump'), true)
+  assert.equal(f.controls.get('forward'), false)
+  f.bot.oxygenLevel = 14
+  swim.monitorSwimming()
+  assert.equal(f.controls.get('jump'), true)
+  assert.equal(f.controls.get('forward'), false)
+  f.bot.oxygenLevel = 18
+  swim.monitorSwimming()
+  assert.equal(f.controls.get('forward'), true)
+  assert.equal(f.state.swimShore, shore)
 })
