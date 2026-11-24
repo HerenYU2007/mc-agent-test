@@ -1,4 +1,6 @@
 const mineflayer = require('mineflayer')
+const { observeToolTags } = require('./mining-speed')
+const { observeLight } = require('./home-light')
 const minecraftData = require('minecraft-data')
 const { pathfinder, Movements } = require('mineflayer-pathfinder')
 const collectBlock = require('mineflayer-collectblock').plugin
@@ -30,6 +32,8 @@ function createLifecycle(runtimeState, features) {
   function createBotConnection() {
     if (runtimeState.bot) return runtimeState.bot
     const connection = mineflayer.createBot({ host: HOST, port: PORT, username: USERNAME, version: VERSION })
+    observeLight(connection)
+    observeToolTags(connection)
     runtimeState.bot = connection
     const pile = new Set()
     const repicked = new Set()

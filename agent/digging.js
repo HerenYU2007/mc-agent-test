@@ -1,4 +1,5 @@
 const { goals } = require('mineflayer-pathfinder')
+const { blockForTool } = require('./mining-speed')
 const { EMPTY_BLOCK, TUNNEL_SAFE_BLOCKS } = require('./config')
 
 function createDigging(runtimeState, features) {
@@ -9,10 +10,7 @@ function createDigging(runtimeState, features) {
 
   function blockDigTimeWith(connection, block, item) {
     const helmet = connection.inventory.slots[connection.getEquipmentDestSlot('head')]
-    const corrected = String(block.material || '').startsWith('incorrect_for_') &&
-      connection.registry.materials['mineable/pickaxe']
-    // Do not mutate the cached world block when fixing the 26.1 ore material.
-    const probe = corrected ? Object.create(block, { material: { value: 'mineable/pickaxe' } }) : block
+    const probe = blockForTool(connection,block,item)
     return probe.digTime(item?.type ?? null, connection.game.gameMode === 'creative',
       ['water', 'flowing_water'].includes(connection._getBlockAtEyeLevel?.()?.name),
       !connection.entity.onGround, [...(item?.enchants || []), ...(helmet?.enchants || [])], connection.entity.effects)
@@ -177,7 +175,7 @@ function createDigging(runtimeState, features) {
       const checkStart = Date.now()
       while (!interrupted() && Date.now() - checkStart < 1200) {
         const checkBlock = connection.blockAt(current.position)
-        if (!checkBlock || EMPTY_BLOCK.test(checkBlock.name) || checkBlock.type === 0 || checkBlock.type !== target.type) {
+        if (checkBlock && (EMPTY_BLOCK.test(checkBlock.name) || checkBlock.type === 0 || checkBlock.type !== target.type)) {
           features.log('dig confirmed broken', { block: current.name, position: current.position, ms: Date.now() - checkStart })
           return true
         }
@@ -186,7 +184,7 @@ function createDigging(runtimeState, features) {
 
       if (interrupted()) return false
       const finalCheck = connection.blockAt(current.position)
-      if (!finalCheck || EMPTY_BLOCK.test(finalCheck.name) || finalCheck.type === 0 || finalCheck.type !== target.type) {
+      if (finalCheck && (EMPTY_BLOCK.test(finalCheck.name) || finalCheck.type === 0 || finalCheck.type !== target.type)) {
         return true
       }
 
@@ -211,8 +209,7 @@ function createDigging(runtimeState, features) {
     const original = connection.digTime.bind(connection)
     features.log('dig timing fix installed')
     connection.digTime = block => {
-      if (!block || !String(block.material || '').startsWith('incorrect_for_')) return original(block)
-      return blockDigTimeWith(connection, block, connection.heldItem)
+      return original(blockForTool(connection,block,connection.heldItem))
     }
   }
 

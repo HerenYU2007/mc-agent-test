@@ -3,6 +3,7 @@ const path = require('node:path')
 const { once } = require('node:events')
 const { Vec3 } = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
+const { createHomeRoute } = require('./agent/home-route')
 const { farmPlots } = require('./agent/base-farm')
 
 const AIR = /^(air|cave_air|void_air)$/
@@ -62,6 +63,7 @@ const SITE_OFFSETS = [[0, 0], [3, 0], [-3, 0], [0, 3], [0, -3], [4, 4], [-4, 4],
 function createSupplyBase(api) {
   let anchor = null
   let farmCenter = null
+  let homeRoute = { stage: 0 }
   let unlocked = false
   let qualificationDiamonds = 0
   let trip = null
@@ -73,6 +75,7 @@ function createSupplyBase(api) {
   try {
     const saved = JSON.parse(fs.readFileSync(api.statePath, 'utf8'))
     if ([1, 2].includes(saved.version) && saved.world === api.world) {
+      if (saved.homeRoute && Number.isInteger(saved.homeRoute.stage) && saved.homeRoute.stage >= 0 && saved.homeRoute.stage <= 8) homeRoute = saved.homeRoute
       if (Array.isArray(saved.position) && saved.position.length === 3 && saved.position.every(Number.isSafeInteger)) {
         anchor = new Vec3(...saved.position)
       }
@@ -93,7 +96,7 @@ function createSupplyBase(api) {
     fs.mkdirSync(path.dirname(api.statePath), { recursive: true })
     fs.writeFileSync(pending, JSON.stringify({
       version: 2, world: api.world, position: position && [position.x, position.y, position.z],
-      qualificationDiamonds: diamonds, unlocked: ready,
+      qualificationDiamonds: diamonds, unlocked: ready, homeRoute,
       farm: farmCenter && [farmCenter.x, farmCenter.y, farmCenter.z],
     }))
     fs.renameSync(pending, api.statePath)
@@ -415,6 +418,29 @@ function createSupplyBase(api) {
     return { queued, burning: blockFor(connection, 'furnace')?.getProperties().lit === true }
   }
 
+  const route = createHomeRoute({ ...api, approach, collect,
+    reserved: p => builtArea(p) || api.farm?.owns(farmCenter,p),
+    show: label => { setPhase(label); api.show?.(label) },
+    craftAt: async (bot,name) => {
+      if (['stick','torch','book'].includes(name)) return make(bot,name,null)
+      const p = piecePos(BY_ID.get('table'))
+      if (!await approach(bot,p)) return false
+      const station = bot.blockAt(p)
+      return station?.name === 'crafting_table' && make(bot,name,station)
+    },
+    makeSticks: async bot => await api.planks(2) && make(bot,'stick',null),
+    placeAt: (bot,p,name) => place(bot,part(name,name,[p.x-anchor.x,p.y-anchor.y,p.z-anchor.z])),
+    withdrawDepot: (bot,name,amount) => useBarrel(bot,'storage',async window => {
+      for (const stack of window.containerItems().filter(item=>item.name===name)) {
+        amount -= await transfer(bot,window,stack,amount,false)
+      }
+    }),
+    watered: bot => !!farmCenter && api.farm.irrigated(bot,farmCenter),
+    planted: bot => farmCenter ? farmPlots(farmCenter).filter(p=>bot.blockAt(p.offset(0,1,0))?.name==='wheat').length : 0,
+    farmStep: (bot,home,table) => api.farm.run(bot,home,farmCenter,table, p => builtArea(p) ||
+      homeRoute.row?.some(([x,,z])=>x===p.x && z===p.z), center=>{ farmCenter=center; saveProgress(anchor) }),
+  })
+
   async function run(connection) {
     if (!unlocked || !inOverworld(connection)) return
     if (anchor && api.expedition?.active(connection, anchor)) {
@@ -451,6 +477,11 @@ function createSupplyBase(api) {
       setPhase(phase)
     }
 
+    const shelter = api.expedition?.status()
+    if (api.homeOnly && shelter?.room && shelter.spawn && !api.expedition.buildingShelter()) {
+      if (api.expedition.inside(connection) && !await api.expedition.leave(connection)) return
+      return route.run(connection,new Vec3(...shelter.room),homeRoute,()=>saveProgress(anchor),blockFor(connection,'table'))
+    }
     const inside = api.expedition?.inside(connection)
     const buildingShelter = api.expedition?.buildingShelter()
     if (inside && !buildingShelter && api.expedition.status().spawn && !connection.isSleeping && api.farm?.hasWork(connection, farmCenter)) {
@@ -537,7 +568,7 @@ function createSupplyBase(api) {
       visitAfter = 0
       return collect(connection, 'iron', IRON, 8)
     }
-    if (api.farm && await api.farm.run(connection, anchor, farmCenter, table, builtArea, position => {
+    if (!api.homeOnly && api.farm && await api.farm.run(connection, anchor, farmCenter, table, builtArea, position => {
       farmCenter = position
       saveProgress(anchor)
     })) {
@@ -581,7 +612,7 @@ function createSupplyBase(api) {
       let phase = status.phase
       if (!progress.unlocked && progress.diamonds) phase = progress.needsResupply ? 'awaiting-resupply' : 'awaiting-diamonds'
       if (progress.unlocked && phase === 'awaiting-armor') phase = 'selecting-site'
-      return { ...status, phase, position: anchor, qualification: progress, expedition: api.expedition?.status(),
+      return { ...status, phase, homeRoute, position: anchor, qualification: progress, expedition: api.expedition?.status(),
         farm: farmCenter && { center: farmCenter, plots: farmPlots(farmCenter) } }
     },
   }

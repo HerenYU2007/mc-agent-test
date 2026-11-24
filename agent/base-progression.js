@@ -1,5 +1,5 @@
 const path = require('node:path')
-const { Movements } = require('mineflayer-pathfinder')
+const { Movements, goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const { createSupplyBase } = require('../supply-base')
 const { createVillageExpedition } = require('./expedition')
@@ -28,6 +28,7 @@ function createBaseProgression(runtimeState, features) {
       statePath: process.env.MC_BASE_STATE_PATH || path.join(PROJECT_ROOT, 'supply-base-state.json'),
       world: JSON.stringify([HOST, PORT, USERNAME]),
       diamondTarget: POST_ARMOR_DIAMONDS,
+      homeOnly: true,
       log: features.log,
       durability: features.toolDurability,
       safe: connection => features.canWorkHere(connection) && !runtimeState.fleeingActive &&
@@ -160,6 +161,30 @@ function createBaseProgression(runtimeState, features) {
         const selected = candidates.find(candidate => candidate.x === decision.target.x && candidate.z === decision.target.z)
         if (selected) features.log('expedition model direction accepted', { position: selected, reason: decision.reason })
         return selected ?? null
+      },
+    })
+    Object.assign(api, { travel, pickup: features.pickUpBlockDrop,
+      show: label => { runtimeState.lastDecision = label },
+      prospectObsidian: async bot => {
+        const y = Math.floor(bot.entity.position.y)
+        if (y > -48 && await features.prospectMiningLevel(Math.max(-48, y - 8))) return
+        if (api.safe(bot)) await features.exploreOneStep()
+      },
+      leather: async bot => {
+        const cow = bot.nearestEntity(e => ['cow','mooshroom'].includes(e.name) && e.position.distanceTo(bot.entity.position) <= 64)
+        if (!cow) return features.exploreOneStep()
+        await features.equipCombatItem()
+        const end = Date.now() + 10000
+        while (api.safe(bot) && cow.isValid && Date.now() < end) {
+          if (cow.position.distanceTo(bot.entity.position) > 3) {
+            await travel(bot,new goals.GoalFollow(cow,2),'寻找制书皮革',3500).catch(()=>{})
+          } else {
+            await bot.lookAt(cow.position.offset(0,0.8,0),true)
+            if (api.safe(bot)) bot.attack(cow)
+            await bot.waitForTicks(14)
+          }
+        }
+        if (api.safe(bot)) await features.collectNearbyDrops(12)
       },
     })
     runtimeState.supplyBase = createSupplyBase(api)

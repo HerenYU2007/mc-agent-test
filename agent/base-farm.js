@@ -74,14 +74,24 @@ function createBaseFarm(api) {
   }
 
   async function approach(bot, position) {
-    const accessible = () => {
+    const accessible = feet => {
       const block = bot.blockAt(position)
-      return block && bot.canSeeBlock(block) && bot.entity.position.distanceTo(position.offset(0.5, 1, 0.5)) <= 4.4
+      if (!block) return false
+      const eye = feet.offset(0, bot.entity.eyeHeight || 1.62, 0)
+      const target = position.offset(0.5, block.shapes.length ? Math.max(...block.shapes.map(shape => shape[4])) - 0.01 : 0.4, 0.5)
+      const ray = target.minus(eye)
+      const distance = ray.norm()
+      if (distance > 4.1) return false
+      const hit = bot.world.raycast(eye,ray.normalize(),distance+0.01)
+      return hit ? hit.position.equals(position) : !block.shapes.length
     }
-    if (!accessible()) {
-      await api.travel(bot, new goals.GoalLookAtBlock(position, bot.world, { reach: 4 }), 'base farm plot', 6000).catch(() => {})
+    if (!accessible(bot.entity.position)) {
+      const goal = new goals.GoalNear(position.x,position.y+1,position.z,3)
+      const within = goal.isEnd.bind(goal)
+      goal.isEnd = p => within(p) && accessible(new Vec3(p.x+0.5,p.y,p.z+0.5))
+      await api.travel(bot, goal, 'base farm plot', 6000).catch(() => {})
     }
-    return api.safe(bot) && accessible()
+    return api.safe(bot) && accessible(bot.entity.position)
   }
 
   async function irrigate(bot, center, table) {
@@ -116,10 +126,10 @@ function createBaseFarm(api) {
       await api.equipTool?.(cover)
       if (!api.safe(bot)) return false
       await bot.dig(cover, true)
+      await bot.waitForTicks(2)
     }
     if (bot.blockAt(center)?.boundingBox !== 'empty') return false
-    await api.travel(bot, new goals.GoalBlock(center.x, center.y, center.z), 'align with farm water hole', 7500).catch(() => {})
-    if (!api.safe(bot) || !bot.entity.position.floored().equals(center)) return false
+    if (!await approach(bot,bottom) || !api.safe(bot)) return false
     await bot.equip(filled, 'hand')
     await bot.lookAt(center.offset(0.5, -0.015, 0.5), true)
     if (!api.safe(bot) || !bot.blockAtCursor(4.5)?.position.equals(bottom)) return false
@@ -184,7 +194,7 @@ function createBaseFarm(api) {
         if (center) { save(center); api.log('base farm site selected', { position: center }) }
       }
       if (!center || !bot.blockAt(center)) return false
-      if (seeds && !irrigated(bot, center)) {
+      if ((seeds || farmPlots(center).some(p=>bot.blockAt(above(p))?.name==='wheat')) && !irrigated(bot, center)) {
         if (await irrigate(bot, center, table)) return true
         if (bot.entity.position.distanceTo(base) > 12) {
           api.log('base farm returning from water search', { position: bot.entity.position })
@@ -212,7 +222,7 @@ function createBaseFarm(api) {
     return false
   }
 
-  return { run, hasWork, owns: (center, position) => Boolean(center && bounded(center, position, 1) &&
+  return { run, hasWork, irrigated, owns: (center, position) => Boolean(center && bounded(center, position, 1) &&
     position.y >= center.y - 1 && position.y <= center.y + 1) }
 }
 

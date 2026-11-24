@@ -213,6 +213,7 @@ function createVillageExpedition(api) {
 
   async function continueTrip(bot, base) {
     if (!active(bot, base) || !api.safe(bot)) return false
+    if (api.homeOnly && ['searching','visiting'].includes(state.phase)) beginReturn(bot, 'home-route')
     if (state.phase === 'searching') {
       const stop = stopReason(bot)
       if (stop) beginReturn(bot, stop)
@@ -309,6 +310,7 @@ function createVillageExpedition(api) {
     const room = await shelter.prepare(bot, state, base, services)
     if (room !== 'ready') { update('preparing', room); return room }
     if (bot.isSleeping) return 'resting'
+    if (api.homeOnly) { update('mapped', 'home-route'); return 'home-ready' }
     const wornShield = bot.inventory.slots[bot.getEquipmentDestSlot('off-hand')]
     if (wornShield?.name !== 'shield' || api.durability(wornShield) <= 24) {
       const shield = bot.inventory.items().find(item => item.name === 'shield' && api.durability(item) > 24)
