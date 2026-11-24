@@ -46,7 +46,7 @@ record ObserverFrame(String username, String connection, String action, double h
         JsonObject tokens = object(state.get("tokens"));
         String combatReason = text(state, "combatReason");
         return new ObserverFrame(username, "在线", text(state, "action"), number(state, "health", 0),
-            (int) number(state, "food", 0), optionalCount(state, "experienceLevel"), (int) number(state, "freeSlots", 0),
+            (int) number(state, "food", 0), optionalCount(state, "experienceLevel"), (int) number(state, "freeSlots", -1),
             flag(state, "foodRecovery"),
             flag(state, "shieldRaised"), flag(state, "modelEnabled"), text(state, "modelAction"),
             combatReason.isEmpty() ? text(state, "modelReason") : combatReason, text(state, "mineOrder"),

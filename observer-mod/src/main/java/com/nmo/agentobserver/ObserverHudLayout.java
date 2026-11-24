@@ -80,7 +80,8 @@ final class ObserverHudLayout {
         metric(gui, font, "饱食", frame.food() + " / 20", frame.food(), x + 6, y + 31, w - 12,
             frame.foodRecovery() ? WARN : 0xFFDEB36C);
         gui.text(font, "背包空位", x + 6, y + 46, MUTED);
-        right(gui, font, frame.freeSlots() + " / 36", x + w - 6, y + 46, frame.freeSlots() == 0 ? WARN : FG);
+        String freeSlots = frame.freeSlots() < 0 ? "—" : frame.freeSlots() + " / 36";
+        right(gui, font, freeSlots, x + w - 6, y + 46, frame.freeSlots() == 0 ? WARN : FG);
         Long level = frame.experienceLevel();
         gui.text(font, "经验等级", x + 6, y + 57, MUTED);
         right(gui, font, level == null ? "—" : NUMBERS.format(level), x + w - 6, y + 57, level == null ? MUTED : GOOD);

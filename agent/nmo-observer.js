@@ -43,21 +43,24 @@ function inventorySlots(inv) {
 
 function createObserverCache(initial, { now = Date.now, modelEnabled = false } = {}) {
   const identity = [initial.username, initial.server, initial.dimension]
-  let status, inventory, statusAt, inventoryAt, movement
+  let status, inventory, statusAt, inventoryAt, inventoryAfter, movement
   let stage = ''
 
   function observeStatus(next, at = now()) {
+    if (!next || at < (statusAt ?? -Infinity)) return
     if ([next?.username, next?.server, next?.dimension].some((value, index) => value != null && value !== identity[index])) {
       status = inventory = movement = undefined
+      statusAt = inventoryAfter = at
       return
     }
-    if (!next?.ready || next.alive === false || !position(next.pos) || at < (statusAt ?? -Infinity)) return
+    if (!next.ready || next.alive === false || !position(next.pos)) return
     if (status?.last_death?.t !== next.last_death?.t && next.last_death?.t != null) {
       inventory = movement = undefined
+      inventoryAfter = at
     }
     status = next
     statusAt = at
-    if (!movement) return
+    if (!movement || at < movement.startedAt) return
     if (next.busy !== 'move_to') {
       movement.trace.length = 0
       return
@@ -72,13 +75,13 @@ function createObserverCache(initial, { now = Date.now, modelEnabled = false } =
   }
 
   function observeInventory(next, at = now()) {
-    if (!status || !Array.isArray(next?.items) || at < (inventoryAt ?? -Infinity) || at < (status.last_death?.t ?? -Infinity)) return
+    if (!status || !Array.isArray(next?.items) || at < (inventoryAt ?? -Infinity) || at < (inventoryAfter ?? -Infinity)) return
     inventory = next
     inventoryAt = at
   }
 
   function beginMove(body, verifiedWaypoints = []) {
-    const move = { target: targetOf(body), waypoints: verifiedWaypoints.map(position).filter(Boolean), trace: [] }
+    const move = { startedAt: now(), target: targetOf(body), waypoints: verifiedWaypoints.map(position).filter(Boolean), trace: [] }
     movement = move
     return () => { if (movement === move) movement = undefined }
   }

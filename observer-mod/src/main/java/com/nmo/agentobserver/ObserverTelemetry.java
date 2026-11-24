@@ -133,4 +133,8 @@ final class ObserverTelemetry {
         if (age > EXPIRE_AFTER_MS) return new Snapshot(ObserverFrame.disconnected(frame.username(), "遥测中断"), false);
         return new Snapshot(frame, cached.interrupted() || age > DELAYED_AFTER_MS);
     }
+
+    static ObserverFrame frame() {
+        return snapshot().frame();
+    }
 }
