@@ -135,6 +135,27 @@ test('优先把十钻带回家，储粮按可食用饥饿值核算', async () =>
   assert.equal(readyFood(bot), STOCK)
   assert.deepEqual(['diamond', 'cobblestone', 'bone', 'diamond_sword', 'bread'].map(category), [0, 1, 2, -1, -1])
 })
+test('已有附魔台时仍先收回上轮作业的水，无法安全取水就保留断点', async () => {
+  const table = home.offset(2, 0, 0)
+  const water = home.offset(30, 0, 0)
+  const bot = {
+    health: 20,
+    entity: { position: home, onGround: true },
+    inventory: { items: () => [{ name: 'bucket', count: 1 }] },
+    blockAt: p =>
+      p.equals(table) ? { name: 'enchanting_table' } :
+      p.equals(water) ? { name: 'water', getProperties: () => ({ level: 0 }) } : air,
+  }
+  const route = createHomeRoute({ safe: () => true, show: () => {}, log: () => {} })
+  const state = {
+    stage: 7,
+    row: [home, home, home, table].map(p => p.toArray()),
+    obsidianWater: { water: water.toArray(), lava: water.offset(1, 0, 0).toArray() },
+  }
+  await route.run(bot, home, state, () => assert.fail('不可达的水源应保留断点'))
+  assert.equal(state.stage, 7)
+  assert.deepEqual(state.obsidianWater.water, water.toArray())
+})
 test('旧的找村庄存档改为返家，在基地不会再次出发', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-route-test-'))
   const file = path.join(dir, 'trip.json')
