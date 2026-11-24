@@ -1,4 +1,5 @@
 const http = require('node:http')
+const { createOreFeed } = require('./nmo-observer-ores')
 
 const STATUS_INTERVAL = 300
 const INVENTORY_INTERVAL = 950
@@ -129,13 +130,18 @@ function createObserverCache(initial, { now = Date.now, modelEnabled = false } =
 async function startNmoObserver(api, initial, { port, log = console.log, modelEnabled = false }) {
   if (!/^\d+$/.test(String(port)) || Number(port) > 65535) throw Error('MC_NMO_OBSERVER_PORT 需为 0–65535 的整数')
   const cache = createObserverCache(initial, { modelEnabled })
+  const ores = createOreFeed(initial, cache.frame)
   const server = http.createServer((request, response) => {
+    if (request.method === 'POST' && request.url === '/observer/ores') {
+      void ores.handle(request, response)
+      return
+    }
     if (request.method !== 'GET' || request.url !== '/observer') {
       response.writeHead(404).end()
       return
     }
     response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-    response.end(JSON.stringify(cache.frame()))
+    response.end(JSON.stringify({ ...cache.frame(), surveySession: ores.session }))
   })
   await new Promise((resolve, reject) => {
     server.once('error', reject)
@@ -172,6 +178,7 @@ async function startNmoObserver(api, initial, { port, log = console.log, modelEn
   sample('inventory', INVENTORY_INTERVAL, cache.observeInventory)
   return {
     ...cache,
+    oreCandidates: ores.candidates,
     endpoint,
     close() {
       controller.abort()

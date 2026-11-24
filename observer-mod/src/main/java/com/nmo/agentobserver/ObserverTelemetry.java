@@ -95,6 +95,8 @@ final class ObserverTelemetry {
         EXECUTOR.scheduleWithFixedDelay(ObserverTelemetry::poll, 0, 200, TimeUnit.MILLISECONDS);
     }
 
+    static volatile String surveySession = "";
+
     private static void poll() {
         try {
             HttpRequest request = HttpRequest.newBuilder(STATE_ENDPOINT).timeout(Duration.ofMillis(850)).GET().build();
@@ -103,7 +105,9 @@ final class ObserverTelemetry {
                 interrupted("面板不可用");
                 return;
             }
-            ObserverFrame frame = ObserverFrame.read(JsonParser.parseString(response.body()).getAsJsonObject());
+            var json = JsonParser.parseString(response.body()).getAsJsonObject();
+            ObserverFrame frame = ObserverFrame.read(json);
+            surveySession = json.has("surveySession") ? json.get("surveySession").getAsString() : "";
             Cached previous = CACHE.get();
             if (frame.inventory() == null && previous.frame().inventory() != null &&
                 frame.username().equals(previous.frame().username())) {
@@ -120,6 +124,7 @@ final class ObserverTelemetry {
     }
 
     private static void interrupted(String message) {
+        surveySession = "";
         CACHE.updateAndGet(cached -> cached.frame().inventory() == null
             ? new Cached(ObserverFrame.disconnected(cached.frame().username(), message), System.nanoTime(), 0, true)
             : new Cached(cached.frame(), cached.receivedNs(), cached.sourceAgeMs(), true));

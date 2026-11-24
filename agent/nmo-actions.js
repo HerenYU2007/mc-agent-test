@@ -21,6 +21,7 @@ const ORES = {
   coal: ['coal_ore', 'deepslate_coal_ore'],
   iron: ['iron_ore', 'deepslate_iron_ore'],
   diamond: ['diamond_ore', 'deepslate_diamond_ore'],
+  debris: ['ancient_debris'],
   redstone: ['redstone_ore', 'deepslate_redstone_ore'],
 }
 const add = (a, b) => a.map((v, i) => v + b[i])
@@ -44,7 +45,7 @@ const recoverable = new Set([
   'occupied',
   'place_failed',
 ])
-function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = {}) {
+function actions(api, memory, save, log, chooseTarget, { volumeScan = false, observerOres } = {}) {
   let status,
     inventory,
     cooldown = new Map(),
@@ -68,6 +69,7 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = 
     (await call('find_blocks', { types, radius, limit, ...opts })).blocks
   const move = createMovement(call)
   const defense = createDefense(call)
+  let committedOre
   let survey
   async function prospect(kind, names) {
     const origin = here()
@@ -276,15 +278,44 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = 
     return 'blocked'
   }
 
+  async function approachOreDrop(target, drops) {
+    const entities = (await call('get_entities', { types: ['item','hostile'], radius: 16 })).entities
+    const item = entities.find(e => drops.includes((e.item || '').replace(/x\d+$/, '').replace(/^minecraft:/, '')) &&
+      dist(e.pos, target.map(v => v + 0.5)) < 3)
+    if (!item || entities.some(e => e.type === 'hostile' && (dist(e.pos,item.pos) < 8 || dist(e.pos,status.pos) < 8))) return
+    const feet = here()
+    const pos = item.pos.map(Math.floor)
+    if (Math.abs(pos[1] - feet[1]) > 1 || dist(feet, pos) > 5) return
+    // Cut a level access into a low ledge so the drop can fall into the corridor.
+    // Never remove support beneath the Bot or open a liquid or gravel pocket.
+    const stand = [pos[0], Math.min(pos[1], feet[1]), pos[2]]
+    if (stand[0] === feet[0] && stand[2] === feet[2] && stand[1] < feet[1]) return
+    const support = await block(add(stand, [0,-1,0]))
+    if (!SOFT.test(support.name) && !['bedrock','cobbled_deepslate','cobblestone','sea_lantern'].includes(support.name)) return
+    const cells = [stand, add(stand,[0,1,0])]
+    for (const cell of cells) {
+      const around = await Promise.all([...DELTAS,[0,1,0],[0,-1,0]].map(d => block(add(cell,d))))
+      if (around.some(b => DANGER.test(b.name) || /^(gravel|red_sand|sand)$/.test(b.name))) return
+      const b = await block(cell)
+      if (!AIR.has(b.name) && (!SOFT.test(b.name) || !b.diggable || dist(status.pos,cell)>4)) return
+    }
+    for (const cell of cells) {
+      if (!AIR.has((await block(cell)).name)) await guardedDig(cell,false)
+    }
+    await move(stand,0)
+  }
+
   async function gather(kind) {
     const targetNames = ORES[kind],
       before = here(),
       selected = tool(kind === 'wood' ? 'axe' : 'pickaxe')
     if (selected && status.held?.name !== selected) await equip(selected)
     for (const [key, end] of cooldown) if (end <= Date.now()) cooldown.delete(key)
-    const isOre = ['iron', 'coal', 'redstone', 'diamond'].includes(kind)
-    const scan = isOre && volumeScan ? await prospect(kind, targetNames) : null
-    const found = scan ? scan.found : await find(targetNames, kind === 'wood' ? 56 : 32, 40)
+    const isOre = ['iron', 'coal', 'redstone', 'diamond', 'debris'].includes(kind)
+    const reports = isOre ? observerOres?.(status, targetNames) || [] : []
+    const hints = reports.filter(b => !cooldown.has(b.pos.join(',')))
+    const scan = isOre && !hints.length && volumeScan ? await prospect(kind, targetNames) : null
+    const found = hints.length ? hints : scan ? scan.found : await find(targetNames, kind === 'wood' ? 56 : 32, 40)
     const monsters =
       isOre && found.length ? (await call('get_entities', { types: ['hostile'], radius: 48 })).entities : []
     const threatensRoute = (pos, enemy) => {
@@ -302,11 +333,14 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = 
     }
     const candidates = found.filter(({ pos }) => {
       if (cooldown.has(pos.join(',')) || monsters.some((e) => threatensRoute(pos, e.pos))) return false
-      if (pos[0] === before[0] && pos[2] === before[2] && (kind !== 'wood' || pos[1] <= before[1]))
+      if (pos[0] === before[0] && pos[2] === before[2] &&
+          (hints.length ? pos[1] === before[1] - 1 : kind !== 'wood' || pos[1] <= before[1]))
         return false
       return kind !== 'wood' || pos[1] <= before[1] + 5
     })
-    const targets = await prioritize(kind, candidates, ({ name, pos, dist }) => ({
+    const ongoing = candidates.find(b => b.source === 'observer' && b.pos.join(',') === committedOre)
+    if (!ongoing) committedOre = undefined
+    const targets = ongoing ? [ongoing, ...candidates.filter(b => b !== ongoing)] : await prioritize(kind, candidates, ({ name, pos, dist }) => ({
       name,
       pos,
       distance: dist,
@@ -315,26 +349,52 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = 
     for (const b of targets) {
       const key = b.pos.join(',')
       try {
-        if (!targetNames.includes((await block(b.pos)).name)) continue
+        const actual = await block(b.pos)
+        if (!targetNames.includes(actual.name) || (b.source === 'observer' && actual.name !== b.name) ||
+            (isOre && actual.harvest_tool_ok === false)) {
+          cooldown.set(key, Date.now() + 15000)
+          continue
+        }
         if (
           kind !== 'wood' &&
-          (await Promise.all(DELTAS.map((v) => block(add(b.pos, v))))).some((k) => DANGER.test(k.name))
+          (await Promise.all((b.source === 'observer' ? [...DELTAS,[0,1,0],[0,-1,0]] : DELTAS).map((v) => block(add(b.pos, v))))).some((k) => DANGER.test(k.name))
         )
           continue
         if (isOre) {
           const progress = await reachSeam(b.pos)
-          if (progress === 'approaching') return false
+          if (progress === 'approaching') {
+            if (b.source === 'observer' && committedOre !== key) {
+              committedOre = key
+              log('已核实旁观者矿点 ' + b.name + ' ' + key + '，正在接近')
+            }
+            return false
+          }
           if (progress === 'blocked') {
             cooldown.set(key, Date.now() + 30000)
             continue
           }
         }
+        const drops = b.source === 'observer' ? [b.name, kind === 'diamond' ? 'diamond' : b.name] : []
+        const beforeLoot = drops.length ? sum(name => drops.includes(name)) : 0
         const res = isOre
           ? await guardedDig(b.pos, true)
           : await call('dig', { pos: b.pos, collect: true, timeout: 8500 })
         cooldown.set(key, Date.now() + 15000)
         if (res.interrupted_by) return false
         await refresh()
+        if (drops.length) {
+          for (let i = 0; i < 4 && sum(name => drops.includes(name)) <= beforeLoot; i++) {
+            if (i === 2) await approachOreDrop(b.pos, drops)
+            await new Promise(resolve => setTimeout(resolve, 250))
+            await refresh()
+          }
+          const gain = sum(name => drops.includes(name)) - beforeLoot
+          if (gain <= 0) {
+            log('目标已挖掘，尚未在背包确认掉落物 ' + key)
+            return false
+          }
+          log('已拾取旁观者矿点掉落物 ×' + gain + ' ' + key)
+        }
         log(
           '采集 ' +
             b.name +
@@ -349,9 +409,10 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = 
         cooldown.set(key, Date.now() + 90000)
       }
     }
-    if (scan?.pending) return false
+    if (scan?.pending || hints.length) return false
+    if (kind === 'debris' && !found.length) return false
     if (kind === 'wood') return here()[1] < 56 ? stair(80) : explore()
-    return stair({ stone: 52, cobble: 56, coal: 60, iron: 18, redstone: -48, diamond: -53 }[kind])
+    return stair({ stone: 52, cobble: 56, coal: 60, iron: 18, redstone: -48, diamond: -53, debris: 15 }[kind])
   }
   async function ensurePlanks(quantity) {
     if (sum((n) => n.endsWith('_planks')) >= quantity) return true
@@ -681,6 +742,7 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = 
     smelt,
     food,
     safety,
+    hasReportedDebris: observerOres ? () => observerOres(status, ORES.debris).length > 0 : undefined,
     startDefense: defense.start,
     get status() {
       return status

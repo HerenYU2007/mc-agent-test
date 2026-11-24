@@ -220,6 +220,12 @@ async function runStep(a, m, save, plan, log) {
     await a.reclaim(m.pickup.item)
     return '继续回收临时工作站'
   }
+  if (a.status.dimension === 'the_nether' && a.hasReportedDebris) {
+    if (!/^(diamond|netherite)_pickaxe$/.test(a.tool('pickaxe') || '')) return '远古残骸需要钻石级镐'
+    if (!a.hasReportedDebris()) return '等待旁观者确认下界矿点'
+    await a.gather('debris')
+    return '按旁观者矿点采集远古残骸'
+  }
   const stage = plan.stage(),
     name = stage.name
   if (name === 'first_night' || m.shelter) {
@@ -329,9 +335,10 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
   try {
     const first = await waitReady(api, sleep),
       { memory, save } = checkpoint(env, api, first)
-    if (env.MC_NMO_OBSERVER_PORT) {
+    const observerPort = env.MC_NMO_OBSERVER_PORT ?? 3001
+    if (observerPort !== 'off') {
       try {
-        observer = await startNmoObserver(api, first, { port: env.MC_NMO_OBSERVER_PORT, log, modelEnabled: Boolean(chooseTarget) })
+        observer = await startNmoObserver(api, first, { port: observerPort, log, modelEnabled: Boolean(chooseTarget) })
       } catch (error) {
         log('赛事观察者启动失败：' + error.message)
       }
@@ -352,7 +359,8 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
     } }
     const loopback = ['127.0.0.1','localhost','[::1]'].includes(new URL(api.base).hostname)
     const a = actions(recordedApi, memory, save, log, chooseTarget, {
-      volumeScan: loopback && env.MC_NMO_ORE_SURVEY !== '0'
+      volumeScan: loopback && env.MC_NMO_ORE_SURVEY !== '0',
+      observerOres: observer?.oreCandidates
     }),
       plan = strategy(a, memory)
     stopDefense = a.startDefense()
