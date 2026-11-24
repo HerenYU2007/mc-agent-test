@@ -10,10 +10,11 @@ record ObserverFrame(String username, String connection, String action, double h
                      int freeSlots, boolean foodRecovery, boolean shieldRaised, boolean modelEnabled,
                      String modelAction, String reason, String mineOrder, String mineResult, Point position,
                      Point target, Point mineTarget, Point committedTarget, Point actual, List<Point> waypoints,
+                     boolean positionCentered, List<Point> trace, String routeSource, Long sampledAt, boolean inventoryFresh,
                      long totalTokens, Long inputTokens, Long outputTokens, Inventory inventory) {
     record Point(double x, Double y, double z, String name) {
         String coordinates() {
-            return (int) x + " / " + (y == null ? "?" : y.intValue()) + " / " + (int) z;
+            return (int) Math.floor(x) + " / " + (y == null ? "?" : (int) Math.floor(y)) + " / " + (int) Math.floor(z);
         }
     }
 
@@ -24,35 +25,49 @@ record ObserverFrame(String username, String connection, String action, double h
     record Inventory(List<Slot> backpack, List<Slot> hotbar, List<Slot> armor, Slot offhand, int selected) {}
 
     static ObserverFrame disconnected(String message) {
-        return new ObserverFrame("NMO-TestAgent", message, "", 0, 0, null, 0, false, false, false, "", "",
-            "", "", null, null, null, null, null, List.of(), 0, null, null, null);
+        return disconnected("NMO-TestAgent", message);
+    }
+
+    static ObserverFrame disconnected(String username, String message) {
+        return new ObserverFrame(username, message, "", 0, 0, null, 0, false, false, false, "", "",
+            "", "", null, null, null, null, null, List.of(), false, List.of(), "", null, false, 0, null, null, null);
     }
 
     static ObserverFrame read(JsonObject state) {
-        if (!flag(state, "connected")) return disconnected("未连接");
+        String username = text(state, "username");
+        if (!flag(state, "connected")) return disconnected(username.isEmpty() ? "NMO-TestAgent" : username, "未连接");
         JsonObject navigation = object(state.get("navigation"));
-        List<Point> waypoints = new ArrayList<>();
-        var points = navigation.get("waypoints");
-        if (points != null && points.isJsonArray()) {
-            for (JsonElement element : points.getAsJsonArray()) {
-                Point point = point(element);
-                if (point != null && point.y != null) waypoints.add(point);
-            }
-        }
+        Point position = point(state.get("position"));
+        boolean centered = state.has("positionCentered") ? flag(state, "positionCentered") : position != null &&
+            (Math.floor(position.x()) != position.x() || Math.floor(position.z()) != position.z());
         JsonObject slots = object(state.get("inventory"));
         Inventory inventory = new Inventory(slots(slots.get("backpack"), 27), slots(slots.get("hotbar"), 9),
             slots(slots.get("armor"), 4), slot(slots.get("offhand")), (int) number(slots, "selected", -1));
         JsonObject tokens = object(state.get("tokens"));
         String combatReason = text(state, "combatReason");
-        return new ObserverFrame(text(state, "username"), "在线", text(state, "action"), number(state, "health", 0),
+        return new ObserverFrame(username, "在线", text(state, "action"), number(state, "health", 0),
             (int) number(state, "food", 0), optionalCount(state, "experienceLevel"), (int) number(state, "freeSlots", 0),
             flag(state, "foodRecovery"),
             flag(state, "shieldRaised"), flag(state, "modelEnabled"), text(state, "modelAction"),
             combatReason.isEmpty() ? text(state, "modelReason") : combatReason, text(state, "mineOrder"),
-            text(state, "mineResult"), point(state.get("position")), point(navigation.get("target")),
+            text(state, "mineResult"), position, point(navigation.get("target")),
             point(state.get("mineTarget")), point(state.get("committedMineTarget")), point(state.get("actual")),
-            List.copyOf(waypoints), (long) number(tokens, "total", 0), optionalCount(tokens, "input"),
+            routePoints(navigation.get("waypoints")), centered, routePoints(navigation.get("trace")),
+            text(navigation, "routeSource"), optionalCount(state, "sampledAt"),
+            !state.has("inventoryFresh") || flag(state, "inventoryFresh"),
+            (long) number(tokens, "total", 0), optionalCount(tokens, "input"),
             optionalCount(tokens, "output"), inventory);
+    }
+
+    private static List<Point> routePoints(JsonElement points) {
+        List<Point> result = new ArrayList<>();
+        if (points != null && points.isJsonArray()) {
+            for (JsonElement element : points.getAsJsonArray()) {
+                Point point = point(element);
+                if (point != null && point.y != null) result.add(point);
+            }
+        }
+        return List.copyOf(result);
     }
 
     private static JsonObject object(JsonElement element) {

@@ -15,6 +15,7 @@ import net.minecraft.world.phys.Vec3;
 
 final class ObserverPath12111 implements AutoCloseable {
     private static final int RED = 0xFFFF3030;
+    private static final int TRACE = 0xFF3DBFC5;
     private static final float WIDTH = 4.0F;
     private static final RenderPipeline PIPELINE = RenderPipelines.register(
         RenderPipeline.builder(RenderPipelines.LINES_SNIPPET)
@@ -28,10 +29,12 @@ final class ObserverPath12111 implements AutoCloseable {
     private final MultiBufferSource.BufferSource buffers = MultiBufferSource.immediate(vertices);
 
     void render(WorldRenderContext context) {
-        ObserverFrame frame = ObserverTelemetry.frame();
+        ObserverTelemetry.Snapshot snapshot = ObserverTelemetry.snapshot();
+        ObserverFrame frame = snapshot.frame();
         ObserverFrame.Point position = frame.position();
         ObserverFrame.Point target = frame.mineTarget() == null ? frame.target() : frame.mineTarget();
-        if (position == null || position.y() == null || (frame.waypoints().isEmpty() && target == null)) return;
+        boolean drawTrace = !snapshot.delayed() && frame.trace().size() > 1;
+        if (position == null || position.y() == null || (frame.waypoints().isEmpty() && target == null && !drawTrace)) return;
         PoseStack matrices = context.matrices();
         Vec3 camera = context.worldState().cameraRenderState.pos;
         matrices.pushPose();
@@ -39,11 +42,20 @@ final class ObserverPath12111 implements AutoCloseable {
             matrices.translate(-camera.x, -camera.y, -camera.z);
             PoseStack.Pose pose = matrices.last();
             VertexConsumer lines = buffers.getBuffer(ROUTE);
-            Vec3 previous = new Vec3(position.x() + 0.5, position.y() + 0.15, position.z() + 0.5);
+            double offset = frame.positionCentered() ? 0 : 0.5;
+            Vec3 previous = new Vec3(position.x() + offset, position.y() + 0.15, position.z() + offset);
             for (ObserverFrame.Point point : frame.waypoints()) {
-                Vec3 next = new Vec3(point.x(), point.y() + 0.15, point.z());
-                line(pose, lines, previous, next);
+                Vec3 next = routePoint(point);
+                line(pose, lines, previous, next, RED);
                 previous = next;
+            }
+            if (drawTrace) {
+                Vec3 observed = routePoint(frame.trace().getFirst());
+                for (ObserverFrame.Point point : frame.trace().subList(1, frame.trace().size())) {
+                    Vec3 next = routePoint(point);
+                    line(pose, lines, observed, next, TRACE);
+                    observed = next;
+                }
             }
             if (target != null) {
                 double y = target.y() == null ? Math.floor(previous.y) : target.y();
@@ -55,26 +67,30 @@ final class ObserverPath12111 implements AutoCloseable {
         }
     }
 
+    private static Vec3 routePoint(ObserverFrame.Point point) {
+        return new Vec3(point.x(), point.y() + 0.15, point.z());
+    }
+
     private static void box(PoseStack.Pose pose, VertexConsumer lines, Vec3 origin) {
         for (int corner = 0; corner < 8; corner++) {
             Vec3 point = origin.add(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
-            if ((corner & 1) == 0) line(pose, lines, point, point.add(1, 0, 0));
-            if ((corner & 2) == 0) line(pose, lines, point, point.add(0, 1, 0));
-            if ((corner & 4) == 0) line(pose, lines, point, point.add(0, 0, 1));
+            if ((corner & 1) == 0) line(pose, lines, point, point.add(1, 0, 0), RED);
+            if ((corner & 2) == 0) line(pose, lines, point, point.add(0, 1, 0), RED);
+            if ((corner & 4) == 0) line(pose, lines, point, point.add(0, 0, 1), RED);
         }
     }
 
-    private static void line(PoseStack.Pose pose, VertexConsumer lines, Vec3 from, Vec3 to) {
+    private static void line(PoseStack.Pose pose, VertexConsumer lines, Vec3 from, Vec3 to, int color) {
         Vec3 delta = to.subtract(from);
         if (delta.lengthSqr() < 1e-8) return;
         Vec3 direction = delta.normalize();
-        vertex(pose, lines, from, direction);
-        vertex(pose, lines, to, direction);
+        vertex(pose, lines, from, direction, color);
+        vertex(pose, lines, to, direction, color);
     }
 
-    private static void vertex(PoseStack.Pose pose, VertexConsumer lines, Vec3 point, Vec3 direction) {
+    private static void vertex(PoseStack.Pose pose, VertexConsumer lines, Vec3 point, Vec3 direction, int color) {
         lines.addVertex(pose, (float) point.x, (float) point.y, (float) point.z)
-            .setColor(RED).setNormal(pose, (float) direction.x, (float) direction.y, (float) direction.z)
+            .setColor(color).setNormal(pose, (float) direction.x, (float) direction.y, (float) direction.z)
             .setLineWidth(WIDTH);
     }
 

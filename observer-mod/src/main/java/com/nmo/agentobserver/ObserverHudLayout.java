@@ -49,8 +49,9 @@ final class ObserverHudLayout {
     }
 
     static void drawHud(Surface gui, Font font, int width, int height, int aboveXp) {
-        ObserverFrame frame = ObserverTelemetry.frame();
-        drawVitals(gui, font, frame);
+        ObserverTelemetry.Snapshot snapshot = ObserverTelemetry.snapshot();
+        ObserverFrame frame = snapshot.frame();
+        drawVitals(gui, font, frame, snapshot.delayed());
         if (frame.inventory() == null) return;
 
         int trayX = (width - TRAY_WIDTH) / 2;
@@ -58,22 +59,22 @@ final class ObserverHudLayout {
         boolean backpackVisible = trayX >= 4 && trayY >= 79;
         if (trayX >= 4 && aboveXp >= 86) {
             updateStacks(frame.inventory());
-            if (backpackVisible) drawInventory(gui, font, trayX, trayY);
+            if (backpackVisible) drawInventory(gui, font, trayX, trayY, frame.inventoryFresh() && !snapshot.delayed());
             drawHotbar(gui, font, frame.inventory(), trayX, height - SLOT - 4);
         }
         drawDecision(gui, font, frame, width, aboveXp, backpackVisible ? trayX + TRAY_WIDTH : -1, trayY);
     }
 
-    private static void drawVitals(Surface gui, Font font, ObserverFrame frame) {
+    private static void drawVitals(Surface gui, Font font, ObserverFrame frame, boolean delayed) {
         int x = 7, y = 7, w = 116;
         boolean connected = frame.inventory() != null;
         panel(gui, x, y, w, connected ? 69 : 29);
-        gui.text(font, fit(font, frame.username(), w - (connected ? 36 : 12)), x + 6, y + 5, FG);
+        gui.text(font, fit(font, frame.username(), w - (connected ? delayed ? 55 : 36 : 12)), x + 6, y + 5, FG);
         if (!connected) {
             gui.text(font, frame.connection(), x + 6, y + 16, MUTED);
             return;
         }
-        right(gui, font, frame.connection(), x + w - 6, y + 5, GOOD);
+        right(gui, font, delayed ? "数据延迟" : frame.connection(), x + w - 6, y + 5, delayed ? WARN : GOOD);
         metric(gui, font, "生命", points(frame.health()), frame.health(), x + 6, y + 17, w - 12,
             frame.health() <= 8 ? WARN : GOOD);
         metric(gui, font, "饱食", frame.food() + " / 20", frame.food(), x + 6, y + 31, w - 12,
@@ -98,9 +99,9 @@ final class ObserverHudLayout {
         if (end > x) gui.fill(x, y + 9, end, y + 11, color);
     }
 
-    private static void drawInventory(Surface gui, Font font, int x, int y) {
+    private static void drawInventory(Surface gui, Font font, int x, int y, boolean fresh) {
         gui.text(font, "Bot 背包", x + 7, y + 4, FG);
-        right(gui, font, "实时", x + TRAY_WIDTH - 7, y + 4, GOOD);
+        right(gui, font, fresh ? "实时" : "最近库存", x + TRAY_WIDTH - 7, y + 4, fresh ? GOOD : WARN);
         int gridX = x + 25, gridY = y + 14;
         for (int i = 0; i < backpack.size(); i++) {
             drawSlot(gui, font, backpack.get(i), gridX + i % 9 * SLOT, gridY + i / 9 * SLOT, false);
@@ -169,6 +170,7 @@ final class ObserverHudLayout {
         String name = goal == null ? frame.mineOrder() : goal.name().isEmpty() ? frame.mineOrder() : goal.name();
         String target = name.isEmpty() && goal == null ? "目标 —" : "目标 " + (name.isEmpty() ? "" : ObserverTelemetry.blockNameZh(name) + " ")
             + (goal == null ? "" : goal.coordinates());
+        if (frame.routeSource().equals("official-goal")) target += frame.trace().size() > 1 ? " · 实走" : " · 仅终点";
         gui.text(font, fit(font, target, w - 12), x + 6, y + 17, GOOD);
         for (int i = 0; i < shownLines; i++) gui.text(font, lines.get(i), x + 6, y + 29 + i * 9, MUTED);
         int row = y + 29 + shownLines * 9;

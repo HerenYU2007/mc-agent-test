@@ -13,7 +13,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import com.google.gson.JsonParser;
 
 final class ObserverTelemetry {
-    private static final AtomicReference<ObserverFrame> FRAME = new AtomicReference<>(ObserverFrame.disconnected("正在连接"));
+    private static final long DELAYED_AFTER_MS = 1000;
+    private static final long EXPIRE_AFTER_MS = 4000;
+    private record Cached(ObserverFrame frame, long receivedNs, long sourceAgeMs, boolean interrupted) {}
+    record Snapshot(ObserverFrame frame, boolean delayed) {}
+    private static final AtomicReference<Cached> CACHE = new AtomicReference<>(
+        new Cached(ObserverFrame.disconnected("正在连接"), System.nanoTime(), 0, false));
     private static final URI STATE_ENDPOINT = URI.create(
         "http://127.0.0.1:" + Integer.getInteger("nmo.observer.port", 3001) + "/observer");
     private static final ScheduledExecutorService EXECUTOR = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -22,7 +27,7 @@ final class ObserverTelemetry {
         return t;
     });
     private static final HttpClient HTTP = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(2))
+        .connectTimeout(Duration.ofMillis(700))
         .build();
     static String blockNameZh(String id) {
         if (id == null || id.isEmpty()) return "未知方块";
@@ -87,26 +92,45 @@ final class ObserverTelemetry {
 
     static void start() {
         System.out.println("观察者 HUD 已启动，状态地址：" + STATE_ENDPOINT);
-        EXECUTOR.scheduleWithFixedDelay(ObserverTelemetry::poll, 0, 500, TimeUnit.MILLISECONDS);
+        EXECUTOR.scheduleWithFixedDelay(ObserverTelemetry::poll, 0, 200, TimeUnit.MILLISECONDS);
     }
 
     private static void poll() {
         try {
-            HttpRequest request = HttpRequest.newBuilder(STATE_ENDPOINT).timeout(Duration.ofSeconds(2)).GET().build();
+            HttpRequest request = HttpRequest.newBuilder(STATE_ENDPOINT).timeout(Duration.ofMillis(850)).GET().build();
             HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
-                FRAME.set(ObserverFrame.disconnected("面板不可用"));
+                interrupted("面板不可用");
                 return;
             }
-            FRAME.set(ObserverFrame.read(JsonParser.parseString(response.body()).getAsJsonObject()));
+            ObserverFrame frame = ObserverFrame.read(JsonParser.parseString(response.body()).getAsJsonObject());
+            Cached previous = CACHE.get();
+            if (frame.inventory() == null && previous.frame().inventory() != null &&
+                frame.username().equals(previous.frame().username())) {
+                interrupted(frame.connection());
+                return;
+            }
+            long sourceAge = frame.sampledAt() == null ? 0 : Math.max(0, System.currentTimeMillis() - frame.sampledAt());
+            CACHE.set(new Cached(frame, System.nanoTime(), sourceAge, false));
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
         } catch (Exception error) {
-            FRAME.set(ObserverFrame.disconnected("面板不可用"));
+            interrupted("面板不可用");
         }
     }
 
-    static ObserverFrame frame() {
-        return FRAME.get();
+    private static void interrupted(String message) {
+        CACHE.updateAndGet(cached -> cached.frame().inventory() == null
+            ? new Cached(ObserverFrame.disconnected(cached.frame().username(), message), System.nanoTime(), 0, true)
+            : new Cached(cached.frame(), cached.receivedNs(), cached.sourceAgeMs(), true));
+    }
+
+    static Snapshot snapshot() {
+        Cached cached = CACHE.get();
+        ObserverFrame frame = cached.frame();
+        if (frame.inventory() == null) return new Snapshot(frame, false);
+        long age = cached.sourceAgeMs() + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - cached.receivedNs());
+        if (age > EXPIRE_AFTER_MS) return new Snapshot(ObserverFrame.disconnected(frame.username(), "遥测中断"), false);
+        return new Snapshot(frame, cached.interrupted() || age > DELAYED_AFTER_MS);
     }
 }
