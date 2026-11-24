@@ -29,7 +29,7 @@ function aim(bot, p, from, placing) {
   const point = placing ? p.offset(0.5, -0.02, 0.5) : p.offset(0.5, 0.5, 0.5)
   const ray = point.minus(from)
   if (ray.norm() > 4.4) return null
-  const hit = bot.world.raycast(from, ray.normalize(), ray.norm() + 0.025)
+  const hit = bot.world.raycast(from, ray.normalize(), placing ? 4.4 : ray.norm())
   if (placing) return hit?.position.equals(p.offset(0, -1, 0)) && hit.face === 1 ? point : null
   return !hit || hit.position.equals(p) ? point : null
 }
@@ -115,9 +115,13 @@ function createHomeObsidian(api) {
       if (!(await waitFor(bot, () => !source(blockAt(bot, p), 'water') && hasBucket(bot, 'water_bucket')))) return false
       api.log('收回造黑曜石的水源', { position: p })
     }
+    if (blockAt(bot, converted)?.name === 'obsidian') {
+      retries.delete(String(converted))
+      api.log('用水浇成黑曜石', { position: converted })
+    }
     state.obsidianWater = null
     save()
-    return blockAt(bot, converted)?.name === 'obsidian'
+    return true
   }
 
   function validPour(bot, lava, water) {
@@ -144,9 +148,7 @@ function createHomeObsidian(api) {
         if (await useBucket(bot, 'water_bucket', water, true, () => validPour(bot, lava, water))) {
           await waitFor(bot, () => source(blockAt(bot, water), 'water') && blockAt(bot, lava)?.name === 'obsidian', 32)
         }
-        if (safe(bot) && await recover(bot, state, save)) {
-          api.log('用水浇成黑曜石', { position: lava })
-        }
+        if (safe(bot)) await recover(bot, state, save)
         return true
       }
     }
