@@ -116,16 +116,19 @@ function createCombatDefence(runtimeState, features) {
         position: entity.position.clone(), velocity: entity.velocity?.clone(), updated: Date.now()
       })
     })
-    // On 26.x the spawn packet already expresses velocity in blocks per tick.
-    // Mineflayer's generic entity helper still divides those values by 8000.
-    connection._client.on('spawn_entity', packet => {
+    // The compact vector is already decoded in blocks per tick. Mineflayer's
+    // generic entity helper still divides these packets by 8000.
+    const updateCompactVelocity = packet => {
       const sample = arrows.get(packet.entityId)
       const v = packet.velocity
-      if (sample && /^26\./.test(connection.version) && v &&
+      if (sample && (connection.supportFeature('entityVelocityIsLpVec3') || /^26\./.test(connection.version)) && v &&
           [v.x, v.y, v.z].every(Number.isFinite)) {
         sample.velocity = new Vec3(v.x, v.y, v.z)
+        sample.updated = Date.now()
       }
-    })
+    }
+    connection._client.on('spawn_entity', updateCompactVelocity)
+    connection._client.on('entity_velocity', updateCompactVelocity)
     connection.on('entityMoved', entity => {
       const sample = arrows.get(entity.id)
       if (!sample) return

@@ -6,7 +6,7 @@ const { Vec3 } = require('vec3')
 const createCombatDefence = require('../agent/combat-defence')
 const createSwimming = require('../agent/swimming')
 
-function fixture() {
+function fixture(compact = false) {
   const controls = new Map()
   const logs = []
   const events = { resumes: 0, looks: 0 }
@@ -14,6 +14,7 @@ function fixture() {
   const bot = Object.assign(new EventEmitter(), {
     _client: new EventEmitter(),
     version: '1.21.11',
+    supportFeature: name => compact && name === 'entityVelocityIsLpVec3',
     registry: { entitiesByName: {} },
     entity: { position: new Vec3(0, 0, 0), isInWater: true, eyeHeight: 1.62 },
     health: 20,
@@ -42,16 +43,18 @@ function fixture() {
   Object.assign(features, createCombatDefence(state, features))
   features.trackCombatImpacts(bot)
   const fire = () => {
-    const arrow = { id: 10, name: 'arrow', position: new Vec3(4, 1.5, 0), velocity: new Vec3(-0.7, 0, 0) }
+    const arrow = { id: 10, name: 'arrow', position: new Vec3(4, 1.5, 0),
+      velocity: new Vec3(-0.7 / (compact ? 8000 : 1), 0, 0) }
     bot.entities[arrow.id] = arrow
     bot.emit('entitySpawn', arrow)
+    if (compact) bot._client.emit('spawn_entity', { entityId: arrow.id, velocity: new Vec3(-0.7, 0, 0) })
     bot.emit('physicsTick')
   }
   return { controls, logs, events, inventory, bot, state, features, fire }
 }
 
 test('水中来箭会举盾并保留上浮；氧气危险立即恢复游泳', async () => {
-  const f = fixture()
+  const f = fixture(true)
   f.fire()
   await flush()
   assert(f.features.isSwimmingArrowGuardActive(f.bot))
