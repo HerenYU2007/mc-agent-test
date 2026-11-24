@@ -3,6 +3,7 @@ const { Vec3 } = require('vec3')
 const { createLightSurvey, rememberTorch } = require('./home-light')
 const createHomeObsidian = require('./home-obsidian')
 const { IRON_FUEL_NAMES } = require('./config')
+const { isStorageBlock } = require('./storage-ledger')
 
 const UP = new Vec3(0, 1, 0)
 const AIR = /^(air|cave_air|void_air)$/
@@ -52,6 +53,41 @@ function createHomeRoute(api) {
   }
   function fresh(bot, p) {
     return bot.blockAt(p, false)
+  }
+  const dimension = bot => bot.game?.dimension || 'overworld'
+
+  async function withStorage(bot, p, action) {
+    const block = fresh(bot, p)
+    if (!isStorageBlock(block?.name)) return false
+    const chest = await bot.openContainer(block)
+    try {
+      await action(chest)
+      return true
+    } finally {
+      try {
+        if (api.storage) api.storage.record(dimension(bot), tuple(p), block.name, chest.containerItems())
+      } finally {
+        chest.close()
+      }
+    }
+  }
+
+  async function takeStored(bot, home, name, goal, fallback) {
+    const locations = (api.storage?.find(dimension(bot), name, tuple(home), 24) || []).map(box => pos(box.pos))
+    if (fallback && !locations.some(p => p.equals(fallback))) locations.push(fallback)
+    const before = count(bot, name)
+    for (const p of locations) {
+      if (!api.safe(bot) || count(bot, name) >= goal) break
+      if (!isStorageBlock(fresh(bot, p)?.name) || !(await api.approach(bot, p)) || !api.safe(bot)) continue
+      await withStorage(bot, p, async chest => {
+        for (const stack of chest.containerItems().filter(item => item.name === name)) {
+          const need = goal - count(bot, name)
+          if (need <= 0 || !api.safe(bot)) break
+          await chest.withdraw(stack.type, stack.metadata, Math.min(need, stack.count))
+        }
+      })
+    }
+    return count(bot, name) > before
   }
   async function plantInReach(bot, p) {
     if (!(await near(bot, p, 2))) return false
@@ -204,8 +240,8 @@ function createHomeRoute(api) {
       for (let i = 0; i < 3; i++) {
         const p = slots[i]
         if (!(await api.approach(bot, p)) || !api.safe(bot) || fresh(bot, p)?.name !== 'chest') return
-        const chest = await bot.openContainer(fresh(bot, p))
-        try {
+        let complete = false
+        await withStorage(bot, p, async chest => {
           for (const stack of bot.inventory.items()) {
             if (!api.safe(bot)) return
             if (category(stack.name) !== i) continue
@@ -220,9 +256,9 @@ function createHomeRoute(api) {
               .reduce((a, b) => a + b.count, 0) < 10
           )
             return
-        } finally {
-          chest.close()
-        }
+          complete = true
+        })
+        if (!complete) return
       }
       return advance()
     }
@@ -260,27 +296,26 @@ function createHomeRoute(api) {
       return
     }
     if (!count(bot, 'book')) {
+      if (await takeStored(bot, home, 'book', 1)) return
       if (count(bot, 'paper') < 3) {
+        if (await takeStored(bot, home, 'paper', 3)) return
+        if (count(bot, 'sugar_cane') < 3 && await takeStored(bot, home, 'sugar_cane', 3)) return
         if (count(bot, 'sugar_cane') < 3)
           return gather(bot, home, ['sugar_cane'], 'sugar_cane', bot.entity.position.floored(), 96)
         return api.craftAt(bot, 'paper', table)
       }
-      if (!count(bot, 'leather')) return api.leather(bot, home)
+      if (!count(bot, 'leather')) {
+        if (await takeStored(bot, home, 'leather', 1)) return
+        return api.leather(bot, home)
+      }
       return api.craftAt(bot, 'book', table)
     }
     const hasPick = bot.inventory.items().some((i) => /^(diamond|netherite)_pickaxe$/.test(i.name))
     const needed = !hasPick && count(bot, 'obsidian') < 4 ? 5 : 2
     if (count(bot, 'diamond') < needed) {
-      if (!(await near(bot, slots[0], 6)) || !(await api.approach(bot, slots[0])) ||
-          !api.safe(bot) || fresh(bot, slots[0])?.name !== 'chest') return
-      const chest = await bot.openContainer(fresh(bot, slots[0]))
-      try {
-        const d = chest.containerItems().find((i) => i.name === 'diamond')
-        if (d) await chest.withdraw(d.type, d.metadata, Math.min(d.count, needed - count(bot, 'diamond')))
-      } finally {
-        chest.close()
-      }
-      if (count(bot, 'diamond') < needed) await api.collect(bot, 'diamond', ['diamond'], needed)
+      await takeStored(bot, home, 'diamond', needed, slots[0])
+      if (count(bot, 'diamond') < needed && api.safe(bot)) await api.withdrawDepot?.(bot, 'diamond', needed - count(bot, 'diamond'))
+      if (count(bot, 'diamond') < needed && api.safe(bot)) await api.collect(bot, 'diamond', ['diamond'], needed)
       return
     }
     if (count(bot, 'obsidian') < 4) {

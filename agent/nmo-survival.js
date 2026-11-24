@@ -338,14 +338,20 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
     a.takeStored = async (item, min) => {
       const records = ledger.find(first.dimension, item, a.here(), 16)
       for (const box of records) {
-        if (!isStorageBlock((await a.block(box.pos)).name)) continue
-        const target = { pos: box.pos }
-        const { sections } = await a.call('window/view', { target })
-        const available = (sections.container || []).reduce((n, stack) => n + (stack.name === item ? stack.count : 0), 0)
-        if (!available) continue
-        await a.call('window/act', { target, ops: [{ op: 'take', from: 'container', item, count: Math.min(available, min - a.count(item)) }] })
-        await a.refresh()
-        if (a.count(item) >= min) return true
+        try {
+          if (!isStorageBlock((await a.block(box.pos)).name)) continue
+          const target = { pos: box.pos }
+          const view = await a.call('window/view', { target })
+          if (!isStorageBlock(view.target)) continue
+          const available = (view.sections?.container || []).reduce((n, stack) => n + (stack.name === item ? stack.count : 0), 0)
+          if (!available) continue
+          const count = Math.min(available, min - a.count(item))
+          await a.call('window/act', { target, ops: [{ op: 'take', from: 'container', item, count }] })
+          await a.refresh()
+          if (a.count(item) >= min) return true
+        } catch (error) {
+          if (!recoverable.has(error.code) && !['inventory_full', 'no_window', 'missing_item'].includes(error.code)) throw error
+        }
       }
       return false
     }
