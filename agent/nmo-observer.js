@@ -5,6 +5,7 @@ const INVENTORY_INTERVAL = 950
 const SAMPLE_TIMEOUT = 1800
 const MAX_AGE = 4000
 const TRACE_LENGTH = 8
+const TRACE_IDLE_LIMIT = 1500
 
 function position(value) {
   if (!Array.isArray(value) || value.length < 3 || !value.slice(0, 3).every(Number.isFinite)) return null
@@ -61,16 +62,23 @@ function createObserverCache(initial, { now = Date.now, modelEnabled = false } =
     status = next
     statusAt = at
     if (!movement || at < movement.startedAt) return
+    const point = position(next.pos)
+    const separation = other => Math.hypot(other.x - point.x, other.y - point.y, other.z - point.z)
+    if (movement.planned) {
+      while (movement.waypoints.length && separation(movement.waypoints[0]) <= 0.8) movement.waypoints.shift()
+      return
+    }
     if (next.busy !== 'move_to') {
       movement.trace.length = 0
       return
     }
-    const point = position(next.pos)
+    if (at - movement.traceAt > TRACE_IDLE_LIMIT) movement.trace.length = 0
     const last = movement.trace.at(-1)
-    const distance = last ? Math.hypot(last.x - point.x, last.y - point.y, last.z - point.z) : Infinity
+    const distance = last ? separation(last) : Infinity
     if (distance < 0.25) return
     if (last && distance > 12) movement.trace.length = 0
     movement.trace.push(point)
+    movement.traceAt = at
     if (movement.trace.length > TRACE_LENGTH) movement.trace.shift()
   }
 
@@ -81,7 +89,9 @@ function createObserverCache(initial, { now = Date.now, modelEnabled = false } =
   }
 
   function beginMove(body, verifiedWaypoints = []) {
-    const move = { startedAt: now(), target: targetOf(body), waypoints: verifiedWaypoints.map(position).filter(Boolean), trace: [] }
+    const waypoints = verifiedWaypoints.map(position).filter(Boolean)
+    const move = { startedAt: now(), target: targetOf(body), planned: waypoints.length > 0,
+      waypoints, trace: [], traceAt: -Infinity }
     movement = move
     return () => { if (movement === move) movement = undefined }
   }
@@ -105,8 +115,8 @@ function createObserverCache(initial, { now = Date.now, modelEnabled = false } =
       navigation: {
         target: movement?.target ?? null,
         waypoints: movement?.waypoints ?? [],
-        trace: movement?.waypoints.length ? [] : movement?.trace ?? [],
-        routeSource: movement?.waypoints.length ? 'planned' : movement ? 'official-goal' : '',
+        trace: movement && now() - movement.traceAt <= TRACE_IDLE_LIMIT ? movement.trace : [],
+        routeSource: movement?.planned ? 'planned' : movement ? 'official-goal' : '',
       },
       inventory: inventorySlots(inventory),
     }

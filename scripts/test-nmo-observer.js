@@ -16,12 +16,17 @@ test('竞赛寻路仅显示观测到的实走轨迹，停走后立即清除', ()
     target: { x: 5, y: 64, z: -4 }, waypoints: [], routeSource: 'official-goal',
     trace: [{ x: 1.5, y: 64, z: -1.5 }, { x: 2.5, y: 64, z: -2.5 }],
   })
+  at += 1501
+  assert.deepEqual(cache.frame().navigation.trace, [])
   cache.observeStatus({ ...base, busy: null }, ++at)
   assert.deepEqual(cache.frame().navigation.trace, [])
   stop()
   assert.equal(cache.frame().navigation.target, null)
   cache.beginMove({ pos: [5, 64, -4] }, [[2.5, 64, -2.5], [3.5, 64, -3.5]])
   assert.deepEqual(cache.frame().navigation.waypoints, [{ x: 2.5, y: 64, z: -2.5 }, { x: 3.5, y: 64, z: -3.5 }])
+  cache.observeStatus({ ...base, pos: [2.5, 64, -2.5], busy: 'move_to' }, ++at)
+  assert.deepEqual(cache.frame().navigation.waypoints, [{ x: 3.5, y: 64, z: -3.5 }])
+  assert.deepEqual(cache.frame().navigation.trace, [])
   assert.equal(cache.frame().positionCentered, true)
 })
 
