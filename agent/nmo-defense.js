@@ -32,6 +32,7 @@ function createDefense(call) {
     holdUntil = 0,
     counterUntil = 0,
     shieldWear,
+    rangedSeenUntil = 0,
     sight,
     wake
   async function release(s) {
@@ -65,9 +66,13 @@ function createDefense(call) {
       holdUntil = 0
     }
     shieldWear = wear
-    const incoming = arrows.find(e => closingArrow(e, old.get(e.id), s.pos)) ??
-      arrows.find(e=>!old.has(e.id) && rows.some(r=>shooters.has(r.name) &&
-        Math.hypot(...r.pos.map((v,i)=>v-e.pos[i]))<3.5))
+    const incoming =
+      arrows.find((e) => closingArrow(e, old.get(e.id), s.pos)) ??
+      arrows.find(
+        (e) =>
+          !old.has(e.id) &&
+          rows.some((r) => shooters.has(r.name) && Math.hypot(...r.pos.map((v, i) => v - e.pos[i])) < 3.5),
+      )
     old = new Map(arrows.map((e) => [e.id, e.pos]))
     const shooter = rows.find((e) => shooters.has(e.name) && e.dist <= 9)
     let target = incoming
@@ -100,8 +105,34 @@ function createDefense(call) {
         await call('posture', { shield: true, jump: s.jumping, sneak: s.sneaking })
         shieldOwned = true
       }
-      holdUntil = now + (incoming ? 360 : 140)
+      holdUntil = now + (incoming ? 650 : 220)
       return 45
+    }
+    const distantShooter = rows.find((e) => shooters.has(e.name) && e.dist > 9 && e.dist <= 20)
+    if (distantShooter && !s.busy && now >= counterUntil) {
+      const key = [distantShooter.id, ...distantShooter.pos.map(Math.floor), ...s.pos.map(Math.floor)].join(
+        ',',
+      )
+      if (!sight || sight.key !== key || now > sight.until) {
+        sight = {
+          key,
+          until: now + 360,
+          visible: await clearSight(
+            call,
+            [s.pos[0], s.pos[1] + 1.55, s.pos[2]],
+            [distantShooter.pos[0], distantShooter.pos[1] + 1.5, distantShooter.pos[2]],
+          ),
+        }
+      }
+      if (sight.visible) rangedSeenUntil = now + 1000
+      if (sight.visible || now < rangedSeenUntil) {
+        if (!s.blocking) {
+          await call('posture', { shield: true, jump: s.jumping, sneak: s.sneaking })
+          shieldOwned = true
+        }
+        holdUntil = now + 180
+        return 45
+      }
     }
     if (now >= holdUntil) await release(s)
     return shooter || arrows.length || rows.length ? 55 : 280
@@ -136,6 +167,11 @@ function createDefense(call) {
       await running
     }
   }
-  return { start, tick, guarding: () => Date.now() < holdUntil, counterReady: () => Date.now() < counterUntil }
+  return {
+    start,
+    tick,
+    guarding: () => Date.now() < holdUntil,
+    counterReady: () => Date.now() < counterUntil,
+  }
 }
 module.exports = { createDefense }

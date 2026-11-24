@@ -42,8 +42,17 @@ function createMovement(call) {
       if (!arrived(fresh.pos, pos, radius)) throw fault('move_unconfirmed')
       return { ...receipt, pos: fresh.pos }
     }
+    let initialTimeout = 9000
+    const feet = initial.pos.map(Math.floor)
+    const dx = target[0] - feet[0],
+      dz = target[2] - feet[2]
+    if (initial.on_ground && !initial.in_water && target[1] === feet[1] + 1 && Math.hypot(dx, dz) <= 8) {
+      const heading = Math.abs(dx) >= Math.abs(dz) ? [Math.sign(dx), 0] : [0, Math.sign(dz)]
+      const obstruction = await call('get_block', { pos: offset(feet, heading, 2) })
+      if (!AIR.has(obstruction.name)) initialTimeout = 1100
+    }
     try {
-      return await walk(target, range, 9000)
+      return await walk(target, range, initialTimeout)
     } catch (error) {
       if (!recoverable.has(error.code)) throw error
     }

@@ -630,7 +630,14 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = 
       (e) => e.id === enemy.id,
     )
     if (!foe) return false
-    if (weak && (await retreat(enemy, foe.pos))) return true
+    if (weak) {
+      if (tactical.choice === '拉开距离后进食' && status.health < 12 && foe.dist >= 10 &&
+          status.food < 20 && inventory.items.some(i=>FOOD.test(i.name))) {
+        await food()
+        return true
+      }
+      if (await retreat(enemy, foe.pos)) return true
+    }
     if (enemy.name === 'creeper' && has('shield')) {
       await call('look', { entity_id: enemy.id })
       await call('posture', { shield: true, jump: status.jumping })
