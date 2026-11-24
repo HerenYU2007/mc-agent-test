@@ -1,4 +1,7 @@
 // All world observations and actions go through the competition HTTP API.
+const { createMovement } = require('./nmo-movement')
+const { createOreSurvey } = require('./nmo-ore-survey')
+const { createDefense } = require('./nmo-defense')
 const { LOG_NAMES, STONE_TARGETS } = require('./config')
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const DANGER = /water|lava|bubble_column|magma|campfire|cactus|powder_snow|fire$/
@@ -25,6 +28,8 @@ const dist = (a, b) => Math.hypot(...a.map((v, i) => v - b[i]))
 const gearRank = (name) =>
   ['wooden', 'golden', 'stone', 'copper', 'iron', 'diamond', 'netherite'].indexOf(name.split('_')[0])
 const recoverable = new Set([
+  'movement_interrupted',
+  'move_unconfirmed',
   'path_not_found',
   'stalled',
   'out_of_reach',
@@ -39,7 +44,7 @@ const recoverable = new Set([
   'occupied',
   'place_failed',
 ])
-function actions(api, memory, save, log, chooseTarget) {
+function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = {}) {
   let status,
     inventory,
     cooldown = new Map(),
@@ -51,7 +56,8 @@ function actions(api, memory, save, log, chooseTarget) {
   const count = (name) => inventory.items.reduce((v, i) => v + (i.name === name ? i.count : 0), 0)
   const sum = (predicate) => inventory.items.reduce((v, i) => v + (predicate(i.name) ? i.count : 0), 0)
   const has = (name) =>
-    !!count(name) || [...Object.values(inventory.armor || {}), inventory.offhand].some((i) => i?.name === name)
+    !!count(name) ||
+    [...Object.values(inventory.armor || {}), inventory.offhand].some((i) => i?.name === name)
   const tool = (kind) =>
     inventory.items
       .filter((i) => i.name.endsWith('_' + kind))
@@ -60,7 +66,34 @@ function actions(api, memory, save, log, chooseTarget) {
   const block = (pos) => call('get_block', { pos })
   const find = async (types, radius = 32, limit = 24, opts = {}) =>
     (await call('find_blocks', { types, radius, limit, ...opts })).blocks
-  const move = (pos, range = 2) => call('move_to', { pos, range, timeout: 9000 })
+  const move = createMovement(call)
+  const defense = createDefense(call)
+  let survey
+  async function prospect(kind, names) {
+    const origin = here()
+    if (
+      !survey ||
+      survey.kind !== kind ||
+      survey.dimension !== status.dimension ||
+      dist(origin, survey.origin) > 4
+    ) {
+      survey = {
+        origin,
+        kind,
+        dimension: status.dimension,
+        found: new Map(),
+        scan: createOreSurvey(origin, names),
+      }
+    }
+    const part = await survey.scan(block, { budget: 72 })
+    for (const b of part.found) survey.found.set(b.pos.join(','), b)
+    const found = [...survey.found.values()]
+      .map((b) => ({ ...b, dist: dist(b.pos, origin) }))
+      .sort((a, b) => a.dist - b.dist)
+    const pending = !part.done
+    if (!pending) survey = null
+    return { found, pending }
+  }
   const equip = (item, slot = 'hand') => call('equip', { item, slot })
   async function craft(item, quantity = 1) {
     const before = count(item)
@@ -77,8 +110,17 @@ function actions(api, memory, save, log, chooseTarget) {
     const choice = await chooseTarget({ objective, position: origin, health, food: status.food, options })
     if (choice === undefined) return entries
     const fresh = await call('status')
-    if (!fresh.ready || fresh.alive === false || fresh.busy || fresh.gamemode !== 'survival' ||
-        fresh.dimension !== status.dimension || fresh.health < health || fresh.nearest_hostile?.dist <= 8 || dist(fresh.pos, origin) > 3) return []
+    if (
+      !fresh.ready ||
+      fresh.alive === false ||
+      fresh.busy ||
+      fresh.gamemode !== 'survival' ||
+      fresh.dimension !== status.dimension ||
+      fresh.health < health ||
+      fresh.nearest_hostile?.dist <= 8 ||
+      dist(fresh.pos, origin) > 3
+    )
+      return []
     if (choice === null || choice === 0) return entries
     return [entries[choice], ...entries.filter((_, i) => i !== choice)]
   }
@@ -87,7 +129,7 @@ function actions(api, memory, save, log, chooseTarget) {
     let choices = DELTAS.map((_, i) => DELTAS[(direction + i) % 4])
     direction = (direction + 1) % 4
     if (away) choices.sort((a, b) => dist(add(floor, b), away) - dist(add(floor, a), away))
-    if (!away) choices = await prioritize('explore', choices, direction => ({ direction }))
+    if (!away) choices = await prioritize('explore', choices, (direction) => ({ direction }))
     for (const v of choices) {
       for (const steps of [8, 4, 2]) {
         const x = floor[0] + steps * v[0],
@@ -146,19 +188,129 @@ function actions(api, memory, save, log, chooseTarget) {
     }
     return explore()
   }
+
+  async function guardedDig(pos, collect) {
+    const unsafe = async () => {
+      const [s, mobs] = await Promise.all([
+        call('status'),
+        call('get_entities', { types: ['hostile'], radius: 36 }),
+      ])
+      return (
+        !s.ready ||
+        !s.alive ||
+        s.dimension !== status.dimension ||
+        mobs.entities.some((e) => dist(e.pos, pos) <= 8 || dist(e.pos, s.pos) <= 8)
+      )
+    }
+    if (await unsafe()) throw Object.assign(Error('矿点附近有怪物'), { code: 'movement_interrupted' })
+    let active = true,
+      interrupted = false
+    const monitor = (async () => {
+      while (active) {
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        if (!active) return
+        if (await unsafe()) {
+          interrupted = true
+          if (active && (await call('status')).busy === 'dig') await call('stop', {})
+          return
+        }
+      }
+    })().catch(() => {
+      interrupted = true
+    })
+    try {
+      const result = await call('dig', { pos, collect, timeout: 8500 })
+      if (interrupted || result.interrupted_by)
+        throw Object.assign(Error('采矿中断'), { code: 'movement_interrupted' })
+      return result
+    } finally {
+      active = false
+      await monitor
+    }
+  }
+  async function reachSeam(target) {
+    const feet = here(),
+      eye = [status.pos[0], status.pos[1] + 1.62, status.pos[2]]
+    const aim = target.map((v) => v + 0.5)
+    const length = dist(eye, aim)
+    const keys = new Set()
+    let obstructed = false
+    for (let k = 0.18; k < length; k += 0.3) {
+      const p = eye.map((v, i) => Math.floor(v + ((aim[i] - v) * k) / length))
+      if (p.every((v, i) => v === target[i])) break
+      const key = p.join(',')
+      if (keys.has(key)) continue
+      keys.add(key)
+      if (!AIR.has((await block(p)).name)) {
+        obstructed = true
+        break
+      }
+    }
+    if (!obstructed && length <= 2.8) return 'reachable'
+    if (!obstructed && length <= 4.4 && target[1] < feet[1]) return 'reachable'
+    const rise = Math.max(-1, Math.min(1, target[1] - feet[1] - (target[1] > feet[1] ? 1 : 0)))
+    const candidates = DELTAS.map((d) => add(feet, [d[0], rise, d[2]])).sort(
+      (a, b) => dist(a, target) - dist(b, target),
+    )
+    for (const next of candidates) {
+      if (next.every((v, i) => v === target[i]) || dist(next, target) >= dist(feet, target)) continue
+      const support = await block(add(next, [0, -1, 0]))
+      if (
+        !SOFT.test(support.name) &&
+        !['cobblestone', 'bedrock', 'cobbled_deepslate', 'sea_lantern'].includes(support.name)
+      )
+        continue
+      const cells = [add(next, [0, 1, 0]), next]
+      if (rise > 0) cells.unshift(add(feet, [0, 2, 0]))
+      if (rise < 0) cells.unshift(add(next, [0, 2, 0]))
+      const blocks = await Promise.all(cells.map(block))
+      if (blocks.some((b) => !AIR.has(b.name) && (!b.diggable || !SOFT.test(b.name)))) continue
+      const borders = await Promise.all(
+        cells.flatMap((p) => [...DELTAS, [0, 1, 0], [0, -1, 0]].map((d) => block(add(p, d)))),
+      )
+      if (borders.some((b) => DANGER.test(b.name) || /^(sand|gravel|red_sand)$/.test(b.name))) continue
+      for (const b of blocks) if (!AIR.has(b.name)) await guardedDig(b.pos, false)
+      await move(next, 0)
+      return 'approaching'
+    }
+    return 'blocked'
+  }
+
   async function gather(kind) {
     const targetNames = ORES[kind],
       before = here(),
       selected = tool(kind === 'wood' ? 'axe' : 'pickaxe')
-    if (selected) await equip(selected)
+    if (selected && status.held?.name !== selected) await equip(selected)
     for (const [key, end] of cooldown) if (end <= Date.now()) cooldown.delete(key)
-    const found = await find(targetNames, kind === 'wood' ? 56 : 32, 40)
+    const isOre = ['iron', 'coal', 'redstone', 'diamond'].includes(kind)
+    const scan = isOre && volumeScan ? await prospect(kind, targetNames) : null
+    const found = scan ? scan.found : await find(targetNames, kind === 'wood' ? 56 : 32, 40)
+    const monsters =
+      isOre && found.length ? (await call('get_entities', { types: ['hostile'], radius: 48 })).entities : []
+    const threatensRoute = (pos, enemy) => {
+      const delta = pos.map((v, i) => v - before[i])
+      const length = delta.reduce((n, v) => n + v * v, 0)
+      const t = length
+        ? Math.max(0, Math.min(1, delta.reduce((n, v, i) => n + v * (enemy[i] - before[i]), 0) / length))
+        : 0
+      return (
+        dist(
+          before.map((v, i) => v + t * delta[i]),
+          enemy,
+        ) <= 8
+      )
+    }
     const candidates = found.filter(({ pos }) => {
-      if (cooldown.has(pos.join(','))) return false
-      if (pos[0] === before[0] && pos[2] === before[2] && (kind !== 'wood' || pos[1] <= before[1])) return false
+      if (cooldown.has(pos.join(',')) || monsters.some((e) => threatensRoute(pos, e.pos))) return false
+      if (pos[0] === before[0] && pos[2] === before[2] && (kind !== 'wood' || pos[1] <= before[1]))
+        return false
       return kind !== 'wood' || pos[1] <= before[1] + 5
     })
-    const targets = await prioritize(kind, candidates, ({ name, pos, dist }) => ({ name, pos, distance: dist }))
+    const targets = await prioritize(kind, candidates, ({ name, pos, dist }) => ({
+      name,
+      pos,
+      distance: dist,
+    }))
     if (candidates.length && !targets.length) return false
     for (const b of targets) {
       const key = b.pos.join(',')
@@ -169,17 +321,34 @@ function actions(api, memory, save, log, chooseTarget) {
           (await Promise.all(DELTAS.map((v) => block(add(b.pos, v))))).some((k) => DANGER.test(k.name))
         )
           continue
-        const res = await call('dig', { pos: b.pos, collect: true, timeout: 8500 })
+        if (isOre) {
+          const progress = await reachSeam(b.pos)
+          if (progress === 'approaching') return false
+          if (progress === 'blocked') {
+            cooldown.set(key, Date.now() + 30000)
+            continue
+          }
+        }
+        const res = isOre
+          ? await guardedDig(b.pos, true)
+          : await call('dig', { pos: b.pos, collect: true, timeout: 8500 })
         cooldown.set(key, Date.now() + 15000)
         if (res.interrupted_by) return false
         await refresh()
-        log('采集 ' + b.name + ' ' + key + (chooseTarget && res.gained ? '，背包增量 ' + JSON.stringify(res.gained) : ''))
+        log(
+          '采集 ' +
+            b.name +
+            ' ' +
+            key +
+            (chooseTarget && res.gained ? '，背包增量 ' + JSON.stringify(res.gained) : ''),
+        )
         return true
       } catch (e) {
         if (!recoverable.has(e.code)) throw e
         cooldown.set(key, Date.now() + 90000)
       }
     }
+    if (scan?.pending) return false
     if (kind === 'wood') return here()[1] < 56 ? stair(80) : explore()
     return stair({ stone: 52, cobble: 56, coal: 60, iron: 18, redstone: -48, diamond: -53 }[kind])
   }
@@ -219,7 +388,8 @@ function actions(api, memory, save, log, chooseTarget) {
           [0, 1, 0],
         ].map((v) => block(add(step, v))),
       )
-      if (AIR.has(floor.name) || DANGER.test(floor.name) || !AIR.has(body.name) || !AIR.has(head.name)) continue
+      if (AIR.has(floor.name) || DANGER.test(floor.name) || !AIR.has(body.name) || !AIR.has(head.name))
+        continue
       try {
         await move(step, 0)
         return await call('place', { item, pos })
@@ -357,6 +527,64 @@ function actions(api, memory, save, log, chooseTarget) {
     if (here()[1] < 60) await stair(76)
     else await explore()
   }
+
+  let encounter,
+    lastMeal = 0
+  async function battleChoice(enemy, weak) {
+    const key = String(enemy.id) + (weak ? ':low' : ':ready')
+    if (encounter?.key === key) return encounter
+    const options = weak ? ['撤往掩体', '拉开距离后进食'] : ['持剑接战', '举盾等待反击']
+    const current = { key, choice: options[0] }
+    encounter = current
+    if (chooseTarget) {
+      // The reflex and the first evasive step run immediately while the model chooses the continuation.
+      Promise.resolve(
+        chooseTarget({
+          objective: weak ? '低血撤离与补给' : '应对正在接近的怪物',
+          position: status.pos,
+          health: status.health,
+          food: status.food,
+          enemy: enemy.name,
+          distance: enemy.dist,
+          options,
+        }),
+      )
+        .then((i) => {
+          if (encounter === current && Number.isInteger(i) && options[i]) current.choice = options[i]
+        })
+        .catch(() => {})
+    }
+    return current
+  }
+  async function retreat(enemy, position) {
+    const s = await call('status'),
+      origin = s.pos.map(Math.floor)
+    const dirs = [...DELTAS].sort((a, b) => dist(add(origin, b), position) - dist(add(origin, a), position))
+    for (const d of dirs) {
+      for (const steps of [8, 5, 3]) {
+        const goal = origin.map((v, i) => v + d[i] * steps)
+        if (dist(goal, position) < enemy.dist + 2) continue
+        const [floor, feet, head] = await Promise.all(
+          [
+            [0, -1, 0],
+            [0, 0, 0],
+            [0, 1, 0],
+          ].map((o) => block(add(goal, o))),
+        )
+        if (AIR.has(floor.name) || DANGER.test(floor.name) || !AIR.has(feet.name) || !AIR.has(head.name))
+          continue
+        try {
+          await move(goal, 0)
+          const updated = await call('status')
+          if (updated.alive && dist(s.pos, updated.pos) > 2) return true
+        } catch (e) {
+          if (!recoverable.has(e.code) && e.code !== 'interrupted') throw e
+        }
+      }
+    }
+    return false
+  }
+
   async function safety() {
     if (status.submerged && status.oxygen < 12) {
       await call('posture', { jump: true })
@@ -381,17 +609,44 @@ function actions(api, memory, save, log, chooseTarget) {
       }
     }
     const enemy = status.nearest_hostile
-    if (!enemy || enemy.dist > 8) return false
-    if (enemy.name === 'creeper' || status.health < 12 || !tool('sword')) {
-      const entities = (await call('get_entities', { types: ['hostile'], radius: 16 })).entities
-      await explore(entities.find((x) => x.id === enemy.id)?.pos)
-    } else {
-      if (inventory.offhand?.name === 'shield' && /skeleton|stray|pillager/.test(enemy.name)) {
-        await call('use_item', { item: 'shield', source: 'off-hand', ms: 650 })
+    if (!enemy || enemy.dist > 12) {
+      if (
+        encounter?.key.endsWith(':low') &&
+        status.health < 16 &&
+        status.food < 20 &&
+        Date.now() - lastMeal > 2000 &&
+        inventory.items.some((i) => FOOD.test(i.name))
+      ) {
+        lastMeal = Date.now()
+        await food()
+        return true
       }
-      await equip(tool('sword'))
-      await call('attack', { entity_id: enemy.id, max_hits: 2, timeout: 3500 })
+      encounter = null
+      return false
     }
+    const weak = status.health < 12 || !tool('sword') || enemy.name === 'creeper'
+    const tactical = await battleChoice(enemy, weak)
+    const foe = (await call('get_entities', { types: ['hostile'], radius: 20 })).entities.find(
+      (e) => e.id === enemy.id,
+    )
+    if (!foe) return false
+    if (weak && (await retreat(enemy, foe.pos))) return true
+    if (enemy.name === 'creeper' && has('shield')) {
+      await call('look', { entity_id: enemy.id })
+      await call('posture', { shield: true, jump: status.jumping })
+      return true
+    }
+    if (has('shield') && /^(skeleton|stray|bogged|pillager)$/.test(enemy.name)) await defense.tick()
+    if (defense.guarding()) return true
+    if (tactical.choice === '举盾等待反击' && foe.dist > 3 && !defense.counterReady() && has('shield')) {
+      await call('look', { entity_id: enemy.id })
+      await call('posture', { shield: true, jump: status.jumping })
+      return true
+    }
+    const weapon = tool('sword') || tool('axe')
+    if (weapon) await equip(weapon)
+    if (status.blocking) await call('posture', { shield: false, jump: status.jumping })
+    await call('attack', { entity_id: enemy.id, max_hits: defense.counterReady() ? 1 : 2, timeout: defense.counterReady() ? 650 : 3500 })
     return true
   }
   return {
@@ -418,6 +673,7 @@ function actions(api, memory, save, log, chooseTarget) {
     smelt,
     food,
     safety,
+    startDefense: defense.start,
     get status() {
       return status
     },

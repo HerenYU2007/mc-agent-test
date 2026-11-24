@@ -166,11 +166,11 @@ test('角色占用施工格时，先通过 HTTP 走到安全的相邻格再重�
     attempts = 0
   const api = {
     async call(name, body) {
-      if (name === 'status') return { pos }
+      if (name === 'status') return { pos, ready:true, alive:true, health:20, dimension:'overworld', on_ground:true }
       if (name === 'inventory') return { items: [] }
       if (name === 'get_block') return { name: body.pos[1] < 64 ? 'stone' : 'air' }
       if (name === 'move_to') {
-        pos = body.pos
+        pos = body.pos.map((v,i)=>i!==1 && Number.isInteger(v)?v+0.5:v)
         return { pos }
       }
       if (name === 'place') {
@@ -361,4 +361,35 @@ test('AIA 拒绝越界选择，HTTP 鉴权失败时不把响应正文写入日�
     assert.ok(lines[0].includes('继续本地流程'))
     assert.ok(!lines[0].includes('private-provider-details'))
   }
+})
+
+test('体积扫描在小预算下完整续扫，发现六面封闭的矿物', async()=>{
+  const {createOreSurvey}=require('../agent/nmo-ore-survey')
+  const seen=new Set(), located=[]
+  const scan=createOreSurvey([2,14.8,-3],['diamond_ore'],{radius:2,minY:13,maxY:15})
+  const expected=[3,14,-3]
+  let complete=false
+  while(!complete) {
+    const result=await scan(async pos=>{
+      const key=pos.join(',')
+      assert(!seen.has(key))
+      seen.add(key)
+      return {name:key===expected.join(',')?'diamond_ore':'stone',pos}
+    },{budget:4})
+    assert(result.reads<=4)
+    complete=result.done
+    located.push(...result.found)
+  }
+  assert.deepEqual(located,[{name:'diamond_ore',pos:expected}])
+  const count=[-2,-1,0,1,2].flatMap(x=>[-1,0,1].flatMap(y=>[-2,-1,0,1,2].filter(z=>x*x+y*y+z*z<=4))).length
+  assert.equal(seen.size,count)
+})
+test('赛事移动回执与服务器实际坐标不符时不宣告到达',async()=>{
+  const {createMovement}=require('../agent/nmo-movement')
+  const move=createMovement(async(name)=>{
+    if(name==='status')return {pos:[0.5,64,0.5],ready:true,alive:true,health:20,dimension:'overworld',on_ground:false}
+    if(name==='move_to')return {pos:[8.5,64,.5]}
+    assert.fail(name)
+  })
+  await assert.rejects(move([8,64,0],0),{code:'path_not_found'})
 })

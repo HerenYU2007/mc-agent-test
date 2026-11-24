@@ -325,7 +325,7 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
       await api.request('auth/login', { username: env.MC_AGENT_USERNAME, password: env.MC_AGENT_PASSWORD })
     ).token
   }
-  let observer
+  let stopDefense, observer
   try {
     const first = await waitReady(api, sleep),
       { memory, save } = checkpoint(env, api, first)
@@ -350,8 +350,12 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
         finishMove?.()
       }
     } }
-    const a = actions(recordedApi, memory, save, log, chooseTarget),
+    const loopback = ['127.0.0.1','localhost','[::1]'].includes(new URL(api.base).hostname)
+    const a = actions(recordedApi, memory, save, log, chooseTarget, {
+      volumeScan: loopback && env.MC_NMO_ORE_SURVEY !== '0'
+    }),
       plan = strategy(a, memory)
+    stopDefense = a.startDefense()
     a.takeStored = async (item, min) => {
       const records = ledger.find(first.dimension, item, a.here(), 16)
       for (const box of records) {
@@ -425,6 +429,7 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
       await sleep(650)
     }
   } finally {
+    await stopDefense?.()
     await observer?.close()
     if (ownSession && api.token) await api.request('auth/logout', {})
   }
