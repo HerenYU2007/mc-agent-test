@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
-const { watchPath } = require('./movement-safety')
+const { CorrectedWalkError, guardDrySteps, watchPath } = require('./movement-safety')
 const { WATER_BLOCK_NAMES } = require('./config')
 const { planClutchStep, executeClutchStep, clutchTimeBudget } = require('./water-clutch-path')
 
@@ -94,12 +94,21 @@ function createNavigation(runtimeState, features) {
   }
 
   async function walkWithTimeout(connection, goal, label, timeoutMs, validateRoute) {
-    return watchPath(connection, goal, () => executeWalk(connection, goal, label, timeoutMs), {
-      validate: validateRoute,
-      canJump: () => runtimeState.bot === connection && !features.waterOwnsMovement() &&
-        !features.isWaterClutchActive(connection) && !runtimeState.impactGuards.has(connection),
-      log: features.log,
-    })
+    const deadline = Date.now() + timeoutMs
+    const movements = connection.pathfinder.movements
+    guardDrySteps(connection, movements)
+    const canJump = () => runtimeState.bot === connection && !features.waterOwnsMovement() &&
+      !features.isWaterClutchActive(connection) && !runtimeState.impactGuards.has(connection)
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await watchPath(connection, goal, () => executeWalk(connection, goal, label, deadline - Date.now()), {
+          validate: validateRoute, canJump, log: features.log,
+        })
+      } catch (error) {
+        if (!(error instanceof CorrectedWalkError) || attempt >= 5 || deadline - Date.now() < 450 ||
+            !canJump() || connection.pathfinder.goal || connection.pathfinder.movements !== movements) throw error
+      }
+    }
   }
 
   async function executeWalk(connection, goal, label, timeoutMs) {
@@ -112,7 +121,9 @@ function createNavigation(runtimeState, features) {
       }, timeoutMs)
     })
     try {
-      return await Promise.race([movement, timeout])
+      const result = await Promise.race([movement, timeout])
+      if (!goal.isEnd(connection.entity.position.floored())) throw new Error(`${label}: actual position did not reach goal`)
+      return result
     } finally {
       clearTimeout(timer)
       if (connection.pathfinder.goal === goal) connection.pathfinder.setGoal(null)

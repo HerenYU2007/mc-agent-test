@@ -4,6 +4,8 @@ const { WATER_BLOCK_NAMES } = require('./config')
 const NEIGHBOURS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
 const HAZARD = /^(lava|flowing_lava|fire|soul_fire|cactus|magma_block|campfire|soul_campfire|powder_snow)$/
 const feetOf = point => new Vec3(Math.floor(point.x), Math.floor(point.y + 0.01), Math.floor(point.z))
+const correctedEdges = new WeakMap()
+const guardedMovements = new WeakSet()
 
 function isFluid(block) {
   return Boolean(block && (WATER_BLOCK_NAMES.has(block.name) ||
@@ -82,9 +84,48 @@ function safeStepUp(connection, destination) {
     clear(current.offset(0, 2, 0)) && clear(target) && clear(target.offset(0, 1, 0))
 }
 
+function blockedDryRise(connection, from, to) {
+  if (to.y - from.y !== 1 || !dryFooting(connection, from) || !dryFooting(connection, to)) return false
+  const blocked = point => connection.blockAt(point)?.boundingBox !== 'empty'
+  if (blocked(from.offset(0, 2, 0))) return true
+  const dx = to.x - from.x
+  const dz = to.z - from.z
+  return Boolean(dx && dz && (blocked(from.offset(dx, 2, 0)) || blocked(from.offset(0, 2, dz))))
+}
+
+const edgeKey = (from, to) => `${from}>${to}`
+const passiveStep = step => !step.toBreak?.length && !step.toPlace?.length
+
+function guardDrySteps(connection, movements) {
+  if (!movements?.getNeighbors || guardedMovements.has(movements)) return
+  guardedMovements.add(movements)
+  const nextSteps = movements.getNeighbors
+  movements.getNeighbors = function (node) {
+    const from = feetOf(node)
+    const recent = correctedEdges.get(connection)
+    return nextSteps.call(this, node).filter(step => {
+      if (!passiveStep(step)) return true
+      const to = feetOf(step)
+      return !(recent?.get(edgeKey(from, to)) > Date.now()) && !blockedDryRise(connection, from, to)
+    })
+  }
+}
+
+class CorrectedWalkError extends Error {
+  constructor(from, to) {
+    super('同一路步反复被服务器纠正')
+    this.from = from
+    this.to = to
+  }
+}
+
 async function watchPath(connection, goal, execute, { validate, canJump = () => true, log = () => {} } = {}) {
   let path = []
   let problem = null
+  let correction = null
+  let lastEdge = ''
+  let lastCorrection = 0
+  let correctionCount = 0
   let lastPosition = connection.entity.position.clone()
   let lastProgress = Date.now()
   const attemptedJumps = new Set()
@@ -102,6 +143,28 @@ async function watchPath(connection, goal, execute, { validate, canJump = () => 
     checkPath(path)
   }
   const reset = () => { path = [] }
+  const onCorrection = () => {
+    if (!ownsGoal() || !canJump() || problem || correction || !path.length) return
+    const from = feetOf(connection.entity.position)
+    const step = path.find(node => !feetOf(node).equals(from))
+    if (!step || !passiveStep(step)) return
+    const to = feetOf(step)
+    if (Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y), Math.abs(to.z - from.z)) > 1 ||
+        !dryFooting(connection, from) || !dryFooting(connection, to)) return
+    const key = edgeKey(from, to)
+    const now = Date.now()
+    correctionCount = lastEdge === key && now - lastCorrection < 1500 ? correctionCount + 1 : 1
+    lastEdge = key
+    lastCorrection = now
+    if (correctionCount < 3) return
+    const recent = correctedEdges.get(connection) ?? new Map()
+    for (const [edge, expires] of recent) if (expires <= now) recent.delete(edge)
+    recent.set(key, now + 15000)
+    correctedEdges.set(connection, recent)
+    correction = new CorrectedWalkError(from, to)
+    log('navigation corrected edge; replanning', { from, to, corrections: correctionCount })
+    connection.pathfinder.setGoal(null)
+  }
   const tick = () => {
     if (!ownsGoal() || !path.length || problem) return
     const { position, onGround, isInWater } = connection.entity
@@ -143,18 +206,24 @@ async function watchPath(connection, goal, execute, { validate, canJump = () => 
   }, 180)
   connection.on('path_update', onPath)
   connection.on('path_reset', reset)
+  connection.on('forcedMove', onCorrection)
   connection.on('physicsTick', tick)
   try {
-    return await execute()
+    const result = await execute()
+    if (correction) throw correction
+    return result
   } catch (error) {
     if (problem) throw new Error(problem, { cause: error })
+    if (correction) throw correction
     throw error
   } finally {
     if (recheck) clearInterval(recheck)
     connection.off('path_update', onPath)
     connection.off('path_reset', reset)
+    connection.off('forcedMove', onCorrection)
     connection.off('physicsTick', tick)
   }
 }
 
-module.exports = { avoidWetCorners, avoidWetSteps, dryFooting, fluidBeside, isFluid, nearbyHostiles, pathHazard, safeStepUp, threatNear, watchPath }
+module.exports = { avoidWetCorners, avoidWetSteps, blockedDryRise, CorrectedWalkError, dryFooting, fluidBeside,
+  guardDrySteps, isFluid, nearbyHostiles, pathHazard, safeStepUp, threatNear, watchPath }
