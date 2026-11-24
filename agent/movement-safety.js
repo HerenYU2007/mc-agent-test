@@ -94,6 +94,34 @@ function blockedDryRise(connection, from, to) {
   return Boolean(dx && dz && (blocked(from.offset(dx, 2, 0)) || blocked(from.offset(0, 2, dz))))
 }
 
+function blockedDryCorner(connection, from, to) {
+  const dx = to.x - from.x
+  const dz = to.z - from.z
+  if (to.y !== from.y || Math.abs(dx) !== 1 || Math.abs(dz) !== 1) return false
+  const fullHeight = p => connection.blockAt(p.offset(0, -1, 0))?.shapes?.some(([x, , z, maxX, maxY, maxZ]) =>
+    x === 0 && z === 0 && maxX === 1 && maxY === 1 && maxZ === 1)
+  if (!fullHeight(from) || !fullHeight(to) || !dryFooting(connection, from) || !dryFooting(connection, to)) return false
+
+  // Intersect the feet-to-head sweep with both inside corners. A diagonal can
+  // graze a collision shape even when the other side column is entirely open.
+  const radius = 0.3
+  const height = 1.8
+  const startX = from.x + 0.5
+  const startZ = from.z + 0.5
+  const sideColumns = [from.offset(dx, 0, 0), from.offset(0, 0, dz)]
+  return sideColumns.some(column => [column, column.offset(0, 1, 0)].some(pos => {
+    const block = connection.blockAt(pos)
+    return block?.shapes?.some(([x, y, z, maxX, maxY, maxZ]) => {
+      if (pos.y + y >= from.y + height || pos.y + maxY <= from.y) return false
+      const a = (pos.x + x - radius - startX) / dx
+      const b = (pos.x + maxX + radius - startX) / dx
+      const c = (pos.z + z - radius - startZ) / dz
+      const d = (pos.z + maxZ + radius - startZ) / dz
+      return Math.max(0, Math.min(a, b), Math.min(c, d)) < Math.min(1, Math.max(a, b), Math.max(c, d))
+    })
+  }))
+}
+
 const edgeKey = (from, to) => `${from}>${to}`
 const passiveStep = step => !step.toBreak?.length && !step.toPlace?.length
 
@@ -107,7 +135,8 @@ function guardDrySteps(connection, movements) {
     return nextSteps.call(this, node).filter(step => {
       if (!passiveStep(step)) return true
       const to = feetOf(step)
-      return !(recent?.get(edgeKey(from, to)) > Date.now()) && !blockedDryRise(connection, from, to)
+      return !(recent?.get(edgeKey(from, to)) > Date.now()) &&
+        !blockedDryRise(connection, from, to) && !blockedDryCorner(connection, from, to)
     })
   }
 }

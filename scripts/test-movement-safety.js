@@ -24,6 +24,24 @@ test('rejects a diagonal rise beside low leaves and preserves a straight rise', 
   assert.deepEqual(movements.getNeighbors(from), [straight])
 })
 
+test('sweeps the player collision box across both corners on level ground', () => {
+  const { connection, from } = fixture()
+  const straight = from.offset(0, 0, 1)
+  const diagonal = from.offset(1, 0, 1)
+  const movements = { getNeighbors: () => [straight, diagonal] }
+  let cornerShape = [0, 0, 0, 1, 1, 1]
+  connection.blockAt = p => {
+    if (p.y === 62) return { name: 'grass_block', shapes: [[0, 0, 0, 1, 1, 1]] }
+    if (p.equals(new Vec3(1, 64, 0))) return { name: 'birch_leaves', shapes: [cornerShape] }
+    return { name: 'air', shapes: [] }
+  }
+
+  guardDrySteps(connection, movements)
+  assert.deepEqual(movements.getNeighbors(from), [straight])
+  cornerShape = [0.85, 0, 0, 1, 1, 0.15]
+  assert.deepEqual(movements.getNeighbors(from), [straight, diagonal])
+})
+
 test('three corrections retire the failed edge and leave the other direction available', async () => {
   const { connection, from, straight, diagonal, movements, goal } = fixture()
   guardDrySteps(connection, movements)
