@@ -28,7 +28,8 @@ function createTelemetry(runtimeState, features) {
         (action === 'explore' && runtimeState.supplyStation.pending)) && runtimeState.supplyStation.status()
     const audit = runtimeState.lastMineAudit?.cycle === runtimeState.currentMineOrder?.cycle && runtimeState.lastMineAudit?.target === runtimeState.currentMineOrder?.target
       ? runtimeState.lastMineAudit : null
-    return { ...status, position: connection.entity.position.floored(), health: connection.health, food: connection.food,
+    return { ...status, position: connection.entity.position, positionCentered: true, sampledAt: Date.now(),
+      health: connection.health, food: connection.food,
       experienceLevel: connection.experience?.level ?? null,
       freeSlots: features.freeBackpackSlots(inventory), foodRecovery: runtimeState.recoveringFood,
       action: hut ? hut.phase : VILLAGE_ACTIONS[action] || FARM_LABELS[action] || BOW_ACTIONS[action] || action,

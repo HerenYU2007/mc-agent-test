@@ -18,16 +18,17 @@ class NmoClient {
     this.token = env.MC_AGENT_TOKEN
   }
 
-  async request(path, body) {
+  async request(path, body, { signal } = {}) {
     const headers = { Accept: 'application/json' }
     if (this.token) headers.Authorization = 'Bearer ' + this.token
     if (body !== undefined) headers['Content-Type'] = 'application/json'
     let response
     let payload
     try {
+      const timeout = AbortSignal.timeout(90000)
       response = await fetch(this.base + '/' + path, {
         method: body === undefined ? 'GET' : 'POST', headers,
-        body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(90000)
+        body: JSON.stringify(body), redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout
       })
       payload = await response.json()
     } catch (cause) {
@@ -41,8 +42,8 @@ class NmoClient {
     return payload
   }
 
-  async call(path, body) {
-    return (await this.request(path, body)).result
+  async call(path, body, options) {
+    return (await this.request(path, body, options)).result
   }
 }
 

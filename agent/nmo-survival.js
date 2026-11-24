@@ -11,6 +11,7 @@ const { LOG_NAMES, STONE_DROPS, ARMOR_SLOTS } = require('./config')
 const { actions, add, dist, AIR, FOOD, recoverable } = require('./nmo-actions')
 const { baseStep } = require('./nmo-base')
 const { createStorageLedger, recordNmoStorage, isStorageBlock } = require('./storage-ledger')
+const { startNmoObserver } = require('./nmo-observer')
 
 function checkpoint(env, api, status) {
   const world = JSON.stringify([
@@ -324,14 +325,30 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
       await api.request('auth/login', { username: env.MC_AGENT_USERNAME, password: env.MC_AGENT_PASSWORD })
     ).token
   }
+  let observer
   try {
     const first = await waitReady(api, sleep),
       { memory, save } = checkpoint(env, api, first)
+    if (env.MC_NMO_OBSERVER_PORT) {
+      try {
+        observer = await startNmoObserver(api, first, { port: env.MC_NMO_OBSERVER_PORT, log, modelEnabled: Boolean(chooseTarget) })
+      } catch (error) {
+        log('赛事观察者启动失败：' + error.message)
+      }
+    }
     const ledger = createStorageLedger(memory.world, { directory: env.MC_STORAGE_LEDGER_DIR, log })
     const recordedApi = { call: async (action, body) => {
-      const receipt = await api.call(action, body)
-      recordNmoStorage(ledger, first.dimension, action, body, receipt)
-      return receipt
+      const finishMove = action === 'move_to' ? observer?.beginMove(body) : undefined
+      const at = Date.now()
+      try {
+        const receipt = await api.call(action, body)
+        if (action === 'status') observer?.observeStatus(receipt, at)
+        if (action === 'inventory') observer?.observeInventory(receipt, at)
+        recordNmoStorage(ledger, first.dimension, action, body, receipt)
+        return receipt
+      } finally {
+        finishMove?.()
+      }
     } }
     const a = actions(recordedApi, memory, save, log, chooseTarget),
       plan = strategy(a, memory)
@@ -360,13 +377,16 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
       failures = 0
     while (!signal?.aborted) {
       try {
+        const at = Date.now()
         const status = await api.call('status')
+        observer?.observeStatus(status, at)
         if (status.gamemode && status.gamemode !== 'survival') throw Error('角色当前模式为 ' + status.gamemode)
         if (status.ready && status.alive !== false && !status.busy) {
           if (status.dimension !== first.dimension || status.server !== first.server)
             throw Error('角色已切换世界，需重新启动并核对存档')
           await a.refresh()
           const stage = await runStep(a, memory, save, plan, log)
+          observer?.setStage(stage)
           if (stage !== previous) log('当前阶段 ' + stage)
           previous = stage
           failures = 0
@@ -405,6 +425,7 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
       await sleep(650)
     }
   } finally {
+    await observer?.close()
     if (ownSession && api.token) await api.request('auth/logout', {})
   }
 }
