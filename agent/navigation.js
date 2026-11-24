@@ -31,6 +31,9 @@ function createNavigation(runtimeState, features) {
     if (runtimeState.bot.pathfinder && !runtimeState.bot.pathfinder.isMoving() && !runtimeState.mineBusy && !runtimeState.swimmingMode) {
       return { target: null, waypoints: [], label: '' }
     }
+    if (points === runtimeState.activePath) {
+      return { ...runtimeState.navigationState, waypoints: points.map(({ x, y, z }) => ({ x, y, z })) }
+    }
     if (points.length < 2) return runtimeState.navigationState
     const position = runtimeState.bot.entity.position
     let nearestIndex = 0
@@ -53,6 +56,7 @@ function createNavigation(runtimeState, features) {
   }
 
   function clearNavigation(label = '') {
+    runtimeState.activePath = null
     runtimeState.navigationState = { target: null, waypoints: [], label }
   }
 

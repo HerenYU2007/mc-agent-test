@@ -180,15 +180,24 @@ function createLifecycle(runtimeState, features) {
     connection.on('stoppedAttacking', () => features.log('stopped attacking'))
     connection.on('goal_reached', () => features.clearNavigation('goal-reached'))
     connection.on('path_stop', () => features.clearNavigation('path-stopped'))
+    connection.on('path_reset', () => {
+      if (runtimeState.bot !== connection) return
+      if (runtimeState.navigationState.waypoints === runtimeState.activePath) {
+        runtimeState.navigationState = { ...runtimeState.navigationState, waypoints: [] }
+      }
+      runtimeState.activePath = null
+    })
     connection.on('path_update', result => {
       if (!result?.path || result.path.length === 0) {
         if (result?.status === 'success' || result?.status === 'noPath') features.clearNavigation(`path-${result.status}`)
         return
       }
       const toPlace = result.path.flatMap(point => Array.isArray(point.toPlace) ? point.toPlace : [])
+      // Pathfinder removes reached nodes from this same array as it walks.
+      runtimeState.activePath = result.path
       runtimeState.navigationState = {
         ...runtimeState.navigationState,
-        waypoints: result.path.map(point => ({ x: point.x, y: point.y, z: point.z })),
+        waypoints: runtimeState.activePath,
       }
       if (toPlace.length > 0) {
         const scaffoldCount = features.inventoryCount(new Set(['dirt', 'cobblestone', 'stone', 'sand', 'gravel']))
