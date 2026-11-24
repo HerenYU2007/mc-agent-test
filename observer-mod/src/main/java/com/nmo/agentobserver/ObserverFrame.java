@@ -6,7 +6,7 @@ import java.util.List;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-record ObserverFrame(String username, String connection, String action, double health, int food,
+record ObserverFrame(String username, String connection, String action, double health, int food, Long experienceLevel,
                      int freeSlots, boolean foodRecovery, boolean shieldRaised, boolean modelEnabled,
                      String modelAction, String reason, String mineOrder, String mineResult, Point position,
                      Point target, Point mineTarget, Point committedTarget, Point actual, List<Point> waypoints,
@@ -24,7 +24,7 @@ record ObserverFrame(String username, String connection, String action, double h
     record Inventory(List<Slot> backpack, List<Slot> hotbar, List<Slot> armor, Slot offhand, int selected) {}
 
     static ObserverFrame disconnected(String message) {
-        return new ObserverFrame("NMO-TestAgent", message, "", 0, 0, 0, false, false, false, "", "",
+        return new ObserverFrame("NMO-TestAgent", message, "", 0, 0, null, 0, false, false, false, "", "",
             "", "", null, null, null, null, null, List.of(), 0, null, null, null);
     }
 
@@ -45,7 +45,8 @@ record ObserverFrame(String username, String connection, String action, double h
         JsonObject tokens = object(state.get("tokens"));
         String combatReason = text(state, "combatReason");
         return new ObserverFrame(text(state, "username"), "在线", text(state, "action"), number(state, "health", 0),
-            (int) number(state, "food", 0), (int) number(state, "freeSlots", 0), flag(state, "foodRecovery"),
+            (int) number(state, "food", 0), optionalCount(state, "experienceLevel"), (int) number(state, "freeSlots", 0),
+            flag(state, "foodRecovery"),
             flag(state, "shieldRaised"), flag(state, "modelEnabled"), text(state, "modelAction"),
             combatReason.isEmpty() ? text(state, "modelReason") : combatReason, text(state, "mineOrder"),
             text(state, "mineResult"), point(state.get("position")), point(navigation.get("target")),

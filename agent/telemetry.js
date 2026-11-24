@@ -29,6 +29,7 @@ function createTelemetry(runtimeState, features) {
     const audit = runtimeState.lastMineAudit?.cycle === runtimeState.currentMineOrder?.cycle && runtimeState.lastMineAudit?.target === runtimeState.currentMineOrder?.target
       ? runtimeState.lastMineAudit : null
     return { ...status, position: connection.entity.position.floored(), health: connection.health, food: connection.food,
+      experienceLevel: connection.experience?.level ?? null,
       freeSlots: features.freeBackpackSlots(inventory), foodRecovery: runtimeState.recoveringFood,
       action: hut ? hut.phase : VILLAGE_ACTIONS[action] || FARM_LABELS[action] || BOW_ACTIONS[action] || action,
       shieldRaised: runtimeState.raisedShields.has(connection), navigation: features.visibleNavigationState(), mineTarget: runtimeState.currentMineTarget,

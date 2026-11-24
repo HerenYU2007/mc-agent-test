@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "nmo-agent-observer",
-  "version": "0.2.1+1.21.11",
+  "version": "0.2.2+1.21.11",
   "name": "NMO Agent Observer",
   "description": "Displays Agent telemetry and paths with always-on night vision in Minecraft Java 1.21.11.",
   "environment": "client",

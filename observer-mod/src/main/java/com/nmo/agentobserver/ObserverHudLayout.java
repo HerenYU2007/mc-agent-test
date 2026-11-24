@@ -55,7 +55,7 @@ final class ObserverHudLayout {
 
         int trayX = (width - TRAY_WIDTH) / 2;
         int trayY = aboveXp - BACKPACK_HEIGHT;
-        boolean backpackVisible = trayX >= 4 && trayY >= 67;
+        boolean backpackVisible = trayX >= 4 && trayY >= 79;
         if (trayX >= 4 && aboveXp >= 86) {
             updateStacks(frame.inventory());
             if (backpackVisible) drawInventory(gui, font, trayX, trayY);
@@ -67,7 +67,7 @@ final class ObserverHudLayout {
     private static void drawVitals(Surface gui, Font font, ObserverFrame frame) {
         int x = 7, y = 7, w = 116;
         boolean connected = frame.inventory() != null;
-        panel(gui, x, y, w, connected ? 58 : 29);
+        panel(gui, x, y, w, connected ? 69 : 29);
         gui.text(font, fit(font, frame.username(), w - (connected ? 36 : 12)), x + 6, y + 5, FG);
         if (!connected) {
             gui.text(font, frame.connection(), x + 6, y + 16, MUTED);
@@ -80,6 +80,9 @@ final class ObserverHudLayout {
             frame.foodRecovery() ? WARN : 0xFFDEB36C);
         gui.text(font, "背包空位", x + 6, y + 46, MUTED);
         right(gui, font, frame.freeSlots() + " / 36", x + w - 6, y + 46, frame.freeSlots() == 0 ? WARN : FG);
+        Long level = frame.experienceLevel();
+        gui.text(font, "经验等级", x + 6, y + 57, MUTED);
+        right(gui, font, level == null ? "—" : NUMBERS.format(level), x + w - 6, y + 57, level == null ? MUTED : GOOD);
     }
 
     private static String points(double health) {
