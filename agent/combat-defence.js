@@ -84,7 +84,7 @@ function createCombatDefence(runtimeState, features) {
       const at = Date.now()
       if (at - (shieldBlocks.get(connection) ?? 0) < 100) return
       shieldBlocks.set(connection, at)
-      features.log('shield impact confirmed', { at, signal })
+      features.log('shield impact confirmed', { at, signal, swimming: swimArrowGuards.has(connection) })
     }
     connection._client.on('entity_status', packet => {
       if (packet.entityId === connection.entity?.id && packet.entityStatus === 29) confirmShieldBlock('entity-status')
