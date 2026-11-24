@@ -345,6 +345,7 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false } = 
         return true
       } catch (e) {
         if (!recoverable.has(e.code)) throw e
+        if (e.code === 'movement_interrupted') throw e
         cooldown.set(key, Date.now() + 90000)
       }
     }
