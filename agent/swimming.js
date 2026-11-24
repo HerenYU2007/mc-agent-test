@@ -263,6 +263,12 @@ function createSwimming(runtimeState, features) {
     const now = Date.now()
     const inWater = isActuallyInWater()
     if (swimOverride && (swimOverrideConnection !== runtimeState.bot || now > swimOverrideUntil)) swimOverride = null
+    if ((inWater || runtimeState.swimmingMode) && features.isSwimmingArrowGuardActive?.(runtimeState.bot)) {
+      // Preserve the bank target and let the shield hold its aim while we stay afloat.
+      if (runtimeState.swimProgress) runtimeState.swimProgress.at = now
+      runtimeState.bot.setControlState('jump', true)
+      return
+    }
     if (!inWater) {
       if (!runtimeState.swimmingMode) {
         if (swimOverride && runtimeState.bot.entity.position.distanceTo(swimOverride) <= 3) swimOverride = null

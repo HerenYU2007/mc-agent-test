@@ -5,6 +5,8 @@ function createCombatDefence(runtimeState, features) {
   const shieldSteps = new WeakSet()
   const shieldBlocks = new WeakMap()
   const hostileSwings = new WeakMap()
+  const swimArrowGuards = new WeakSet()
+  const enoughAir = connection => Number(connection.oxygenLevel ?? 20) > 6
 
   function damageInterruptActive(connection) {
     return runtimeState.impactGuards.has(connection) || runtimeState.meleeConnection === connection
@@ -140,12 +142,15 @@ function createCombatDefence(runtimeState, features) {
     })
     connection.on('physicsTick', () => {
       if (connection !== runtimeState.bot || connection.health <= 0 || (!arrows.size && !litCreepers.size) || runtimeState.isEating ||
-          runtimeState.isSmelting || runtimeState.isDiggingBlock || connection.targetDigBlock || features.waterOwnsMovement() ||
+          runtimeState.isSmelting || runtimeState.isDiggingBlock || connection.targetDigBlock ||
           runtimeState.impactGuards.has(connection)) return
+      const swimming = features.waterOwnsMovement()
+      if (swimming && (!arrows.size || !features.isActuallyInWater(connection) || !enoughAir(connection) ||
+          features.isWaterClutchActive(connection))) return
       const slot = connection.getEquipmentDestSlot('off-hand')
       if (connection.inventory.slots[slot]?.name !== 'shield') return
       const feet = connection.entity.position
-      const creeper = [...litCreepers].find(entity => !considered.has(entity) &&
+      const creeper = !swimming && [...litCreepers].find(entity => !considered.has(entity) &&
         entity.position.distanceTo(feet) < 6 && features.hostileSight(entity).visible)
       if (creeper) {
         considered.add(creeper)
@@ -174,7 +179,7 @@ function createCombatDefence(runtimeState, features) {
       }
       if (!incoming) return
       considered.add(incoming.arrow)
-      void guardAgainstArrow(connection, incoming).catch(error => features.log('arrow guard interrupted', { message: error.message }))
+      void guardAgainstArrow(connection, incoming, swimming).catch(error => features.log('arrow guard interrupted', { message: error.message }))
     })
   }
 
@@ -209,35 +214,44 @@ function createCombatDefence(runtimeState, features) {
     }
   }
 
-  async function guardAgainstArrow(connection, { arrow, ticks, velocity }) {
+  async function guardAgainstArrow(connection, { arrow, ticks, velocity }, swimming) {
     const start = connection.entity.position.clone()
-    const route = features.visibleNavigationState().waypoints || []
+    const route = swimming ? [] : features.visibleNavigationState().waypoints || []
     const waypoint = route.find(point => Math.hypot(point.x - start.x, point.z - start.z) >= 0.8)
     const pursuing = runtimeState.meleeConnection === connection
     const retreating = runtimeState.fleeingActive
-    const target = waypoint || (pursuing ? features.closeCombatPlan()?.target?.position : null) ||
-      (retreating ? start.offset(velocity.x * 5, 0, velocity.z * 5) : null)
-    features.pauseCombatTask(connection)
+    const target = !swimming && (waypoint || (pursuing ? features.closeCombatPlan()?.target?.position : null) ||
+      (retreating ? start.offset(velocity.x * 5, 0, velocity.z * 5) : null))
+    if (swimming) swimArrowGuards.add(connection)
+    else features.pauseCombatTask(connection)
     runtimeState.impactGuards.add(connection)
     try {
       features.cancelCombatBow(connection, '检测到来箭，切换格挡')
-      features.stopPathfinder()
-      connection.clearControlStates()
+      if (swimming) {
+        for (const key of ['sprint', 'forward', 'back', 'left', 'right']) connection.setControlState(key, false)
+        connection.setControlState('jump', true)
+      } else {
+        features.stopPathfinder()
+        connection.clearControlStates()
+      }
       const eyes = connection.entity.position.offset(0, connection.entity.eyeHeight, 0)
       const facing = eyes.offset(-velocity.x * 8, 0, -velocity.z * 8)
       await connection.lookAt(facing, true)
       if (connection !== runtimeState.bot || connection.health <= 0 || !raiseCombatShield(connection, arrow)) return
-      features.log('incoming arrow guard', { entityId: arrow.id, estimatedImpactMs: Math.round(ticks * 50) })
+      features.log('incoming arrow guard', { entityId: arrow.id, estimatedImpactMs: Math.round(ticks * 50), swimming })
       const until = Date.now() + Math.max(350, Math.round(ticks * 50) + 160)
-      while (connection === runtimeState.bot && connection.health > 0 && !features.waterOwnsMovement() && Date.now() < until) {
+      while (connection === runtimeState.bot && connection.health > 0 && Date.now() < until &&
+          (swimming ? enoughAir(connection) : !features.waterOwnsMovement())) {
         if (target && runtimeState.raisedShields.has(connection)) stepWhileShielding(connection, facing, target)
         await new Promise(resolve => setTimeout(resolve, 60))
       }
       const moved = connection.entity?.position.distanceTo(start) ?? 0
       if (moved >= 0.2) features.log('moved while blocking arrow', { distance: Number(moved.toFixed(2)), pursuing, retreating })
     } finally {
+      swimArrowGuards.delete(connection)
       runtimeState.impactGuards.delete(connection)
       lowerCombatShield(connection)
+      if (swimming && connection === runtimeState.bot) features.monitorSwimming()
     }
   }
 
@@ -249,6 +263,7 @@ function createCombatDefence(runtimeState, features) {
     stopShieldSteps,
     stepWhileShielding,
     trackCombatImpacts,
+    isSwimmingArrowGuardActive: connection => swimArrowGuards.has(connection),
     latestShieldBlock: connection => shieldBlocks.get(connection) ?? 0,
     latestHostileSwing: entity => hostileSwings.get(entity) ?? 0,
   }
