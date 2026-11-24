@@ -38,6 +38,7 @@ const recipes = {
 }
 async function material(a, item, min = 1) {
   if (a.count(item) >= min) return true
+  if (await a.takeStored?.(item, min)) return true
   if (item === 'planks') return a.ensurePlanks(min)
   if (item === 'stick') return a.ensureSticks(min)
   if (item === 'stone' || item === 'cobblestone') {

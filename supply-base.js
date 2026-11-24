@@ -5,6 +5,7 @@ const { Vec3 } = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
 const { createHomeRoute } = require('./agent/home-route')
 const { farmPlots } = require('./agent/base-farm')
+const { createStorageLedger } = require('./agent/storage-ledger')
 
 const AIR = /^(air|cave_air|void_air)$/
 const STONE = ['cobblestone', 'cobbled_deepslate']
@@ -61,6 +62,10 @@ const SITE_OFFSETS = [[0, 0], [3, 0], [-3, 0], [0, 3], [0, -3], [4, 4], [-4, 4],
   [7, 0], [-7, 0], [0, 7], [0, -7], [7, 7], [-7, 7], [7, -7], [-7, -7]]
 
 function createSupplyBase(api) {
+  const storage = createStorageLedger(JSON.stringify(['direct', api.world, process.env.MC_WORLD_ID || api.statePath]), {
+    directory: process.env.MC_STORAGE_LEDGER_DIR,
+    log: api.log,
+  })
   let anchor = null
   let farmCenter = null
   let homeRoute = { stage: 0 }
@@ -233,7 +238,12 @@ function createSupplyBase(api) {
     } finally {
       clearTimeout(timer)
       controller.abort()
-      if (window && window === connection.currentWindow) connection.closeWindow(window)
+      if (window && window === connection.currentWindow) {
+        if (window.inventoryStart === 27) {
+          storage.record(connection.game?.dimension || 'overworld', position.toArray(), 'barrel', window.containerItems())
+        }
+        connection.closeWindow(window)
+      }
     }
   }
 
@@ -418,7 +428,7 @@ function createSupplyBase(api) {
     return { queued, burning: blockFor(connection, 'furnace')?.getProperties().lit === true }
   }
 
-  const route = createHomeRoute({ ...api, approach, collect,
+  const route = createHomeRoute({ ...api, approach, collect, storage,
     reserved: p => builtArea(p) || api.farm?.owns(farmCenter,p),
     show: label => { setPhase(label); api.show?.(label) },
     craftAt: async (bot,name) => {

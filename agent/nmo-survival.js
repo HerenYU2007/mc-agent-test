@@ -10,6 +10,7 @@ const createEquipment = require('./equipment')
 const { LOG_NAMES, STONE_DROPS, ARMOR_SLOTS } = require('./config')
 const { actions, add, dist, AIR, FOOD, recoverable } = require('./nmo-actions')
 const { baseStep } = require('./nmo-base')
+const { createStorageLedger, recordNmoStorage, isStorageBlock } = require('./storage-ledger')
 
 function checkpoint(env, api, status) {
   const world = JSON.stringify([
@@ -326,8 +327,28 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
   try {
     const first = await waitReady(api, sleep),
       { memory, save } = checkpoint(env, api, first)
-    const a = actions(api, memory, save, log, chooseTarget),
+    const ledger = createStorageLedger(memory.world, { directory: env.MC_STORAGE_LEDGER_DIR, log })
+    const recordedApi = { call: async (action, body) => {
+      const receipt = await api.call(action, body)
+      recordNmoStorage(ledger, first.dimension, action, body, receipt)
+      return receipt
+    } }
+    const a = actions(recordedApi, memory, save, log, chooseTarget),
       plan = strategy(a, memory)
+    a.takeStored = async (item, min) => {
+      const records = ledger.find(first.dimension, item, a.here(), 16)
+      for (const box of records) {
+        if (!isStorageBlock((await a.block(box.pos)).name)) continue
+        const target = { pos: box.pos }
+        const { sections } = await a.call('window/view', { target })
+        const available = (sections.container || []).reduce((n, stack) => n + (stack.name === item ? stack.count : 0), 0)
+        if (!available) continue
+        await a.call('window/act', { target, ops: [{ op: 'take', from: 'container', item, count: Math.min(available, min - a.count(item)) }] })
+        await a.refresh()
+        if (a.count(item) >= min) return true
+      }
+      return false
+    }
     let previous,
       nextConnect = 0,
       failures = 0
