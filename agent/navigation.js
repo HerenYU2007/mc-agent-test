@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
-const { CorrectedWalkError, guardDrySteps, watchPath } = require('./movement-safety')
+const { CorrectedWalkError, guardDrySteps, retryCenteredRise, watchPath } = require('./movement-safety')
 const { WATER_BLOCK_NAMES } = require('./config')
 const { planClutchStep, executeClutchStep, clutchTimeBudget } = require('./water-clutch-path')
 
@@ -99,6 +99,9 @@ function createNavigation(runtimeState, features) {
     guardDrySteps(connection, movements)
     const canJump = () => runtimeState.bot === connection && !features.waterOwnsMovement() &&
       !features.isWaterClutchActive(connection) && !runtimeState.impactGuards.has(connection)
+    const canRecover = () => canJump() && !connection.pathfinder.goal && connection.pathfinder.movements === movements &&
+      !runtimeState.fleeingActive && !runtimeState.emergencyRetreating && !features.closeCombatPlan()
+    const centered = new Set()
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await watchPath(connection, goal, () => executeWalk(connection, goal, label, deadline - Date.now()), {
@@ -107,6 +110,12 @@ function createNavigation(runtimeState, features) {
       } catch (error) {
         if (!(error instanceof CorrectedWalkError) || attempt >= 5 || deadline - Date.now() < 450 ||
             !canJump() || connection.pathfinder.goal || connection.pathfinder.movements !== movements) throw error
+        const edge = `${error.from}>${error.to}`
+        if (!centered.has(edge) && deadline - Date.now() > 1000 && canRecover()) {
+          centered.add(edge)
+          await retryCenteredRise(connection, error, canRecover)
+          if (!canRecover()) throw error
+        }
       }
     }
   }

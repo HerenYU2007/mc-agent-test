@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const { Vec3 } = require('vec3')
-const { CorrectedWalkError, guardDrySteps, watchPath } = require('../agent/movement-safety')
+const { centerOnDryFooting, CorrectedWalkError, guardDrySteps, watchPath } = require('../agent/movement-safety')
 
 function fixture(leaves = null) {
   const connection = new EventEmitter()
@@ -38,4 +38,22 @@ test('three corrections retire the failed edge and leave the other direction ava
   await assert.rejects(cause, CorrectedWalkError)
   assert.deepEqual(movements.getNeighbors(from), [diagonal])
   assert.equal(connection.listenerCount('forcedMove'), 0)
+})
+
+test('moves off the block edge before retrying a jump and releases both controls', async () => {
+  const { connection } = fixture(new Vec3(1, 65, 0))
+  connection.entity.onGround = true
+  connection.entity.position.x = 0.78
+  connection.lookAt = async () => {}
+  const controls = new Map()
+  connection.getControlState = name => controls.get(name) ?? false
+  connection.setControlState = (name, value) => {
+    controls.set(name, value)
+    if (name === 'forward' && value && controls.get('sneak')) connection.entity.position.x = 0.5
+  }
+
+  assert.equal(await centerOnDryFooting(connection, () => true), true)
+  assert.equal(connection.entity.position.x, 0.5)
+  assert.equal(controls.get('forward'), false)
+  assert.equal(controls.get('sneak'), false)
 })

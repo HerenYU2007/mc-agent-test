@@ -1,4 +1,5 @@
 const { Vec3 } = require('vec3')
+const { setTimeout: wait } = require('node:timers/promises')
 const { WATER_BLOCK_NAMES } = require('./config')
 
 const NEIGHBOURS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
@@ -119,6 +120,36 @@ class CorrectedWalkError extends Error {
   }
 }
 
+async function centerOnDryFooting(connection, canMove) {
+  const origin = feetOf(connection.entity.position)
+  const center = origin.offset(0.5, 0, 0.5)
+  const linedUp = () => Math.hypot(connection.entity.position.x - center.x,
+    connection.entity.position.z - center.z) <= 0.1
+  const canCenter = () => canMove() && connection.entity.onGround && !connection.entity.isInWater &&
+    feetOf(connection.entity.position).equals(origin) && dryFooting(connection, origin)
+  if (!canCenter() || linedUp()) return false
+  const airborne = connection.entity.position.offset(0, connection.entity.eyeHeight ?? 1.62, 0)
+  await connection.lookAt(new Vec3(center.x, airborne.y, center.z), true)
+  if (!canCenter()) return false
+  const deadline = Date.now() + 650
+  const wasSneaking = connection.getControlState('sneak')
+  connection.setControlState('sneak', true)
+  connection.setControlState('forward', true)
+  try {
+    while (Date.now() < deadline && canCenter() && !linedUp()) await wait(35)
+    return canCenter() && linedUp()
+  } finally {
+    connection.setControlState('forward', false)
+    connection.setControlState('sneak', wasSneaking)
+  }
+}
+
+async function retryCenteredRise(connection, { from, to }, canMove) {
+  if (!safeStepUp(connection, to) || !await centerOnDryFooting(connection, canMove)) return false
+  correctedEdges.get(connection)?.delete(edgeKey(from, to))
+  return true
+}
+
 async function watchPath(connection, goal, execute, { validate, canJump = () => true, log = () => {} } = {}) {
   let path = []
   let problem = null
@@ -225,5 +256,6 @@ async function watchPath(connection, goal, execute, { validate, canJump = () => 
   }
 }
 
-module.exports = { avoidWetCorners, avoidWetSteps, blockedDryRise, CorrectedWalkError, dryFooting, fluidBeside,
-  guardDrySteps, isFluid, nearbyHostiles, pathHazard, safeStepUp, threatNear, watchPath }
+module.exports = { avoidWetCorners, avoidWetSteps, blockedDryRise, centerOnDryFooting, CorrectedWalkError,
+  dryFooting, fluidBeside, guardDrySteps, isFluid, nearbyHostiles, pathHazard, retryCenteredRise,
+  safeStepUp, threatNear, watchPath }
