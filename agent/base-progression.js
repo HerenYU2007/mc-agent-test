@@ -67,7 +67,9 @@ function createBaseProgression(runtimeState, features) {
       },
     }
     const blockedReturnSteps = new WeakMap()
-    const travel = async (connection, goal, label, timeout, { returnWaypoint = false, recoverStep = false } = {}) => {
+    const travel = async (connection, goal, label, timeout, {
+      returnWaypoint = false, recoverStep = false, allowClutch = !recoverStep,
+    } = {}) => {
       const origin = returnWaypoint ? connection.entity.position.floored() : null
       const walking = new ExpeditionMovements(connection)
       walking.canDig = false
@@ -107,7 +109,7 @@ function createBaseProgression(runtimeState, features) {
         connection.on('forcedMove', onCorrection)
       }
       try {
-        await api.goto(goal, label, timeout, { allowClutch: !recoverStep })
+        await api.goto(goal, label, timeout, { allowClutch })
       } catch (error) {
         if (firstStep && api.safe(connection) && stillAtOrigin()) {
           blockedReturnSteps.set(connection, { origin, step: firstStep, until: Date.now() + 60000 })

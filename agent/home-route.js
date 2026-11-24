@@ -1,7 +1,8 @@
 const { goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
-const { blockForTool } = require('./mining-speed')
 const { createLightSurvey, rememberTorch } = require('./home-light')
+const createHomeObsidian = require('./home-obsidian')
+const { IRON_FUEL_NAMES } = require('./config')
 
 const UP = new Vec3(0, 1, 0)
 const AIR = /^(air|cave_air|void_air)$/
@@ -40,6 +41,7 @@ function category(name) {
 function createHomeRoute(api) {
   const survey = createLightSurvey()
   const finalSurvey = createLightSurvey()
+  const quarry = createHomeObsidian(api)
   const cooldown = new Map()
   let forageTurn = 0
   async function near(bot, p, range = 3) {
@@ -68,51 +70,29 @@ function createHomeRoute(api) {
     for (const p of candidates.slice(0, 3)) {
       cooldown.set(p.toString(), Date.now() + 20000)
       if (!api.safe(bot)) return
-      if (
-        drop === 'obsidian' &&
-        [
-          UP,
-          new Vec3(0, -1, 0),
-          new Vec3(1, 0, 0),
-          new Vec3(-1, 0, 0),
-          new Vec3(0, 0, 1),
-          new Vec3(0, 0, -1),
-        ].some((v) => /lava/.test(fresh(bot, p.plus(v))?.name || ''))
-      )
-        continue
-      const plant = drop !== 'obsidian'
-      if (!(plant ? await plantInReach(bot, p) : await api.approach(bot, p))) continue
+      if (!(await plantInReach(bot, p))) continue
       const block = fresh(bot, p)
-      if (!block || !names.includes(block.name) || !bot.canDigBlock(block) || (!plant && !bot.canSeeBlock(block)))
-        continue
-      if (drop === 'obsidian') {
-        const pick = bot.inventory.items().find((i) => /^(diamond|netherite)_pickaxe$/.test(i.name))
-        if (!pick) return
-        await bot.equip(pick, 'hand')
-      }
+      if (!block || !names.includes(block.name) || !bot.canDigBlock(block)) continue
       const before = count(bot, drop)
       if (!api.safe(bot)) return
-      const guard =
-        drop === 'obsidian'
-          ? setInterval(() => {
-              if (!api.safe(bot) && bot.targetDigBlock?.position.equals(p)) bot.stopDigging()
-            }, 100)
-          : null
-      try {
-        await bot.dig(blockForTool(bot, block, bot.heldItem), true)
-      } finally {
-        clearInterval(guard)
-      }
+      await bot.dig(block, true)
       if (api.safe(bot)) await api.pickup(new Set([drop]), p, before)
       return
     }
-    if (drop === 'obsidian' && api.prospectObsidian) return api.prospectObsidian(bot)
     // Probe new loaded terrain without launching a village search.
     const angle = ++forageTurn * 2.39996
     const radius = Math.min(range, 12 + (forageTurn % Math.max(1, range - 12)))
     const dx = Math.round(Math.cos(angle) * radius),
       dz = Math.round(Math.sin(angle) * radius)
     await api.travel(bot, new goals.GoalXZ(home.x + dx, home.z + dz), '搜索基地所需材料', 7500).catch(() => {})
+  }
+  async function makeBucket(bot, table) {
+    if (count(bot, 'iron_ingot') >= 3) return api.craftAt(bot, 'bucket', table)
+    if (count(bot, 'raw_iron') + count(bot, 'iron_ingot') < 3)
+      return api.collect(bot, 'iron', ['iron_ingot', 'raw_iron'], 3)
+    if (!bot.inventory.items().some(item => IRON_FUEL_NAMES.has(item.name)))
+      return api.collect(bot, 'coal', [...IRON_FUEL_NAMES], 3)
+    return api.smeltIron()
   }
   function rowSite(bot, home) {
     for (let r = 4; r <= 14; r++)
@@ -266,8 +246,19 @@ function createHomeRoute(api) {
     }
     if (stage !== 7) return
     const target = slots[3]
+    if (s.obsidianWater) {
+      api.show('收回造黑曜石的水源')
+      if (quarry.hasBucket(bot, 'bucket') || quarry.hasBucket(bot, 'water_bucket')) {
+        await quarry.recover(bot, s, save)
+        if (s.obsidianWater && !quarry.hasBucket(bot, 'bucket')) return makeBucket(bot, table)
+      } else return makeBucket(bot, table)
+      return
+    }
     if (fresh(bot, target)?.name === 'enchanting_table') return advance()
-    if (count(bot, 'enchanting_table')) return api.placeAt(bot, target, 'enchanting_table')
+    if (count(bot, 'enchanting_table')) {
+      if (await near(bot, target, 5)) return api.placeAt(bot, target, 'enchanting_table')
+      return
+    }
     if (!count(bot, 'book')) {
       if (count(bot, 'paper') < 3) {
         if (count(bot, 'sugar_cane') < 3)
@@ -280,7 +271,8 @@ function createHomeRoute(api) {
     const hasPick = bot.inventory.items().some((i) => /^(diamond|netherite)_pickaxe$/.test(i.name))
     const needed = !hasPick && count(bot, 'obsidian') < 4 ? 5 : 2
     if (count(bot, 'diamond') < needed) {
-      if (!(await api.approach(bot, slots[0])) || !api.safe(bot) || fresh(bot, slots[0])?.name !== 'chest') return
+      if (!(await near(bot, slots[0], 6)) || !(await api.approach(bot, slots[0])) ||
+          !api.safe(bot) || fresh(bot, slots[0])?.name !== 'chest') return
       const chest = await bot.openContainer(fresh(bot, slots[0]))
       try {
         const d = chest.containerItems().find((i) => i.name === 'diamond')
@@ -296,7 +288,16 @@ function createHomeRoute(api) {
         if (count(bot, 'stick') < 2 && !(await api.makeSticks(bot))) return api.wood()
         return api.craftAt(bot, 'diamond_pickaxe', table)
       }
-      return gather(bot, home, ['obsidian'], 'obsidian', bot.entity.position.floored(), 96)
+      api.show('采集黑曜石')
+      if (await quarry.mine(bot) || !api.safe(bot)) return
+      if (!quarry.hasBucket(bot, 'water_bucket')) {
+        if (!quarry.hasBucket(bot, 'bucket')) return makeBucket(bot, table)
+        api.show('找水装满水桶')
+        return quarry.fill(bot)
+      }
+      api.show('寻找安全的岩浆源')
+      if (await quarry.convert(bot, s, save) || !api.safe(bot)) return
+      return api.prospectObsidian(bot)
     }
     return api.craftAt(bot, 'enchanting_table', table)
   }

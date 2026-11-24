@@ -123,6 +123,7 @@ function createScheduler(runtimeState, features) {
         !runtimeState.isEating && !runtimeState.isDiggingBlock && !runtimeState.bot?.targetDigBlock &&
         !runtimeState.shelteredUntilDawn && !runtimeState.emergencyShelteredUntil && !features.deathRecoveryDue() &&
         !runtimeState.fleeingActive && Date.now() >= runtimeState.retreatUntil &&
+        !runtimeState.supplyBase.status().homeRoute?.obsidianWater &&
         features.hasEmptyTravelBucket(runtimeState.bot)) {
       runtimeState.busy = true
       try {
