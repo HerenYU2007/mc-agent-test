@@ -242,7 +242,7 @@ function actions(api, memory, save, log, chooseTarget, {
       eye = [status.pos[0], status.pos[1] + 1.62, status.pos[2]]
     const aim = target.map((v) => v + 0.5)
     const length = dist(eye, aim)
-    if (length <= 4.4) {
+    if (length <= 2.8 || (length <= 4.4 && target[1] < feet[1])) {
       const cells = new Map()
       for (let k = 0.12; k < length; k += 0.12) {
         const p = eye.map((v, i) => Math.floor(v + ((aim[i] - v) * k) / length))
@@ -250,8 +250,8 @@ function actions(api, memory, save, log, chooseTarget, {
         cells.set(p.join(','), p)
       }
       const cover = (await Promise.all([...cells.values()].map(block))).filter(b => !AIR.has(b.name))
-      if (!cover.length && (observed || length <= 2.8 || target[1] < feet[1])) return 'reachable'
-      if (observed && cover.length === 1 && SOFT.test(cover[0].name) && cover[0].diggable &&
+      if (!cover.length) return 'reachable'
+      if (observed && length <= 1.8 && cover.length === 1 && SOFT.test(cover[0].name) && cover[0].diggable &&
           dist(cover[0].pos, add(feet, [0, -1, 0])) > 0) {
         const borders = await Promise.all([...DELTAS, [0, 1, 0], [0, -1, 0]].map(d => block(add(cover[0].pos, d))))
         if (!borders.some(b => DANGER.test(b.name) || /^(gravel|red_sand|sand)$/.test(b.name))) {
