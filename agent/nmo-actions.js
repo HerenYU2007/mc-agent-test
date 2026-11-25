@@ -1,6 +1,7 @@
 // All world observations and actions go through the competition HTTP API.
 const { createMovement } = require('./nmo-movement')
 const { createOreSurvey } = require('./nmo-ore-survey')
+const { ORE_KINDS } = require('./nmo-observer-ores')
 const { createDefense } = require('./nmo-defense')
 const { LOG_NAMES, STONE_TARGETS } = require('./config')
 const AIR = new Set(['air', 'cave_air', 'void_air'])
@@ -18,12 +19,16 @@ const ORES = {
   wood: [...LOG_NAMES],
   cobble: ['stone'],
   stone: [...STONE_TARGETS],
-  coal: ['coal_ore', 'deepslate_coal_ore'],
-  iron: ['iron_ore', 'deepslate_iron_ore'],
-  diamond: ['diamond_ore', 'deepslate_diamond_ore'],
-  debris: ['ancient_debris'],
-  redstone: ['redstone_ore', 'deepslate_redstone_ore'],
+  ...ORE_KINDS,
 }
+const ORE_DROPS = {
+  coal: 'coal', iron: 'raw_iron', copper: 'raw_copper', gold: 'raw_gold', diamond: 'diamond',
+  lapis: 'lapis_lazuli', redstone: 'redstone', emerald: 'emerald', quartz: 'quartz', debris: 'ancient_debris',
+}
+const ORE_LEVEL = { coal: 60, iron: 18, copper: 48, gold: -16, diamond: -53,
+  lapis: 0, redstone: -48, emerald: 100, quartz: 48, debris: 15 }
+const REQUIRED_PICK = { coal: 0, iron: 2, copper: 2, gold: 4, diamond: 4,
+  lapis: 2, redstone: 4, emerald: 4, quartz: 0, debris: 5 }
 const add = (a, b) => a.map((v, i) => v + b[i])
 const dist = (a, b) => Math.hypot(...a.map((v, i) => v - b[i]))
 const gearRank = (name) =>
@@ -45,7 +50,9 @@ const recoverable = new Set([
   'occupied',
   'place_failed',
 ])
-function actions(api, memory, save, log, chooseTarget, { volumeScan = false, observerOres } = {}) {
+function actions(api, memory, save, log, chooseTarget, {
+  volumeScan = false, observerOres, oreSurveyPending, forgetObserverOre,
+} = {}) {
   let status,
     inventory,
     cooldown = new Map(),
@@ -230,26 +237,29 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false, obs
       await monitor
     }
   }
-  async function reachSeam(target) {
+  async function reachSeam(target, observed = false) {
     const feet = here(),
       eye = [status.pos[0], status.pos[1] + 1.62, status.pos[2]]
     const aim = target.map((v) => v + 0.5)
     const length = dist(eye, aim)
-    const keys = new Set()
-    let obstructed = false
-    for (let k = 0.18; k < length; k += 0.3) {
-      const p = eye.map((v, i) => Math.floor(v + ((aim[i] - v) * k) / length))
-      if (p.every((v, i) => v === target[i])) break
-      const key = p.join(',')
-      if (keys.has(key)) continue
-      keys.add(key)
-      if (!AIR.has((await block(p)).name)) {
-        obstructed = true
-        break
+    if (length <= 4.4) {
+      const cells = new Map()
+      for (let k = 0.12; k < length; k += 0.12) {
+        const p = eye.map((v, i) => Math.floor(v + ((aim[i] - v) * k) / length))
+        if (p.every((v, i) => v === target[i])) break
+        cells.set(p.join(','), p)
+      }
+      const cover = (await Promise.all([...cells.values()].map(block))).filter(b => !AIR.has(b.name))
+      if (!cover.length && (observed || length <= 2.8 || target[1] < feet[1])) return 'reachable'
+      if (observed && cover.length === 1 && SOFT.test(cover[0].name) && cover[0].diggable &&
+          dist(cover[0].pos, add(feet, [0, -1, 0])) > 0) {
+        const borders = await Promise.all([...DELTAS, [0, 1, 0], [0, -1, 0]].map(d => block(add(cover[0].pos, d))))
+        if (!borders.some(b => DANGER.test(b.name) || /^(gravel|red_sand|sand)$/.test(b.name))) {
+          await guardedDig(cover[0].pos, false)
+          return 'approaching'
+        }
       }
     }
-    if (!obstructed && length <= 2.8) return 'reachable'
-    if (!obstructed && length <= 4.4 && target[1] < feet[1]) return 'reachable'
     const rise = Math.max(-1, Math.min(1, target[1] - feet[1] - (target[1] > feet[1] ? 1 : 0)))
     const candidates = DELTAS.map((d) => add(feet, [d[0], rise, d[2]])).sort(
       (a, b) => dist(a, target) - dist(b, target),
@@ -311,9 +321,10 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false, obs
       selected = tool(kind === 'wood' ? 'axe' : 'pickaxe')
     if (selected && status.held?.name !== selected) await equip(selected)
     for (const [key, end] of cooldown) if (end <= Date.now()) cooldown.delete(key)
-    const isOre = ['iron', 'coal', 'redstone', 'diamond', 'debris'].includes(kind)
+    const isOre = Object.hasOwn(ORE_KINDS, kind)
     const reports = isOre ? observerOres?.(status, targetNames) || [] : []
     const hints = reports.filter(b => !cooldown.has(b.pos.join(',')))
+    if (isOre && !hints.length && oreSurveyPending?.()) return false
     const scan = isOre && !hints.length && volumeScan ? await prospect(kind, targetNames) : null
     const found = hints.length ? hints : scan ? scan.found : await find(targetNames, kind === 'wood' ? 56 : 32, 40)
     const monsters =
@@ -346,22 +357,28 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false, obs
       distance: dist,
     }))
     if (candidates.length && !targets.length) return false
-    for (const b of targets) {
+    for (const b of hints.length ? targets.slice(0, 8) : targets) {
       const key = b.pos.join(',')
       try {
         const actual = await block(b.pos)
-        if (!targetNames.includes(actual.name) || (b.source === 'observer' && actual.name !== b.name) ||
-            (isOre && actual.harvest_tool_ok === false)) {
+        if (!targetNames.includes(actual.name) || (b.source === 'observer' && actual.name !== b.name)) {
+          if (b.source === 'observer') forgetObserverOre?.(status, b.pos, b.name)
           cooldown.set(key, Date.now() + 15000)
           continue
         }
+        if (isOre && b.source !== 'observer' && actual.harvest_tool_ok === false) {
+          cooldown.set(key, Date.now() + 15000)
+          continue
+        }
+        if (isOre && b.source === 'observer' &&
+            (!selected || gearRank(selected) < (b.name === 'nether_gold_ore' ? 0 : REQUIRED_PICK[kind]))) continue
         if (
           kind !== 'wood' &&
           (await Promise.all((b.source === 'observer' ? [...DELTAS,[0,1,0],[0,-1,0]] : DELTAS).map((v) => block(add(b.pos, v))))).some((k) => DANGER.test(k.name))
         )
           continue
         if (isOre) {
-          const progress = await reachSeam(b.pos)
+          const progress = await reachSeam(b.pos, b.source === 'observer')
           if (progress === 'approaching') {
             if (b.source === 'observer' && committedOre !== key) {
               committedOre = key
@@ -374,13 +391,14 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false, obs
             continue
           }
         }
-        const drops = b.source === 'observer' ? [b.name, kind === 'diamond' ? 'diamond' : b.name] : []
+        const drops = b.source === 'observer' ? [b.name, b.name === 'nether_gold_ore' ? 'gold_nugget' : ORE_DROPS[kind]] : []
         const beforeLoot = drops.length ? sum(name => drops.includes(name)) : 0
         const res = isOre
           ? await guardedDig(b.pos, true)
           : await call('dig', { pos: b.pos, collect: true, timeout: 8500 })
         cooldown.set(key, Date.now() + 15000)
         if (res.interrupted_by) return false
+        if (b.source === 'observer') forgetObserverOre?.(status, b.pos, b.name)
         await refresh()
         if (drops.length) {
           for (let i = 0; i < 4 && sum(name => drops.includes(name)) <= beforeLoot; i++) {
@@ -412,7 +430,7 @@ function actions(api, memory, save, log, chooseTarget, { volumeScan = false, obs
     if (scan?.pending || hints.length) return false
     if (kind === 'debris' && !found.length) return false
     if (kind === 'wood') return here()[1] < 56 ? stair(80) : explore()
-    return stair({ stone: 52, cobble: 56, coal: 60, iron: 18, redstone: -48, diamond: -53, debris: 15 }[kind])
+    return stair({ stone: 52, cobble: 56, ...ORE_LEVEL }[kind])
   }
   async function ensurePlanks(quantity) {
     if (sum((n) => n.endsWith('_planks')) >= quantity) return true

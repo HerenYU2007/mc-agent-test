@@ -5,18 +5,22 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.google.gson.JsonParser;
+import com.google.gson.Gson;
 
 final class ObserverTelemetry {
     private static final long DELAYED_AFTER_MS = 1000;
     private static final long EXPIRE_AFTER_MS = 4000;
     private record Cached(ObserverFrame frame, long receivedNs, long sourceAgeMs, boolean interrupted) {}
     record Snapshot(ObserverFrame frame, boolean delayed) {}
+    record OreSurvey(String id, String dimension, int chunkX, int chunkZ, List<String> names) {}
+    private static final Gson JSON = new Gson();
     private static final AtomicReference<Cached> CACHE = new AtomicReference<>(
         new Cached(ObserverFrame.disconnected("正在连接"), System.nanoTime(), 0, false));
     private static final URI STATE_ENDPOINT = URI.create(
@@ -96,6 +100,7 @@ final class ObserverTelemetry {
     }
 
     static volatile String surveySession = "";
+    static volatile OreSurvey oreSurvey;
 
     private static void poll() {
         try {
@@ -108,6 +113,7 @@ final class ObserverTelemetry {
             var json = JsonParser.parseString(response.body()).getAsJsonObject();
             ObserverFrame frame = ObserverFrame.read(json);
             surveySession = json.has("surveySession") ? json.get("surveySession").getAsString() : "";
+            oreSurvey = JSON.fromJson(json.get("oreSurvey"), OreSurvey.class);
             Cached previous = CACHE.get();
             if (frame.inventory() == null && previous.frame().inventory() != null &&
                 frame.username().equals(previous.frame().username())) {
@@ -125,6 +131,7 @@ final class ObserverTelemetry {
 
     private static void interrupted(String message) {
         surveySession = "";
+        oreSurvey = null;
         CACHE.updateAndGet(cached -> cached.frame().inventory() == null
             ? new Cached(ObserverFrame.disconnected(cached.frame().username(), message), System.nanoTime(), 0, true)
             : new Cached(cached.frame(), cached.receivedNs(), cached.sourceAgeMs(), true));

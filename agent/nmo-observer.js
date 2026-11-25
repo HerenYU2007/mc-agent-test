@@ -141,7 +141,7 @@ async function startNmoObserver(api, initial, { port, log = console.log, modelEn
       return
     }
     response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-    response.end(JSON.stringify({ ...cache.frame(), surveySession: ores.session }))
+    response.end(JSON.stringify({ ...cache.frame(), surveySession: ores.session, oreSurvey: ores.activeRequest() }))
   })
   await new Promise((resolve, reject) => {
     server.once('error', reject)
@@ -179,6 +179,8 @@ async function startNmoObserver(api, initial, { port, log = console.log, modelEn
   return {
     ...cache,
     oreCandidates: ores.candidates,
+    oreSurveyPending: ores.pending,
+    forgetOre: ores.forget,
     endpoint,
     close() {
       controller.abort()

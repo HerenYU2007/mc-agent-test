@@ -360,7 +360,9 @@ async function runSurvival(env, { log = console.log, sleep = delay, signal } = {
     const loopback = ['127.0.0.1','localhost','[::1]'].includes(new URL(api.base).hostname)
     const a = actions(recordedApi, memory, save, log, chooseTarget, {
       volumeScan: loopback && env.MC_NMO_ORE_SURVEY !== '0',
-      observerOres: observer?.oreCandidates
+      observerOres: observer?.oreCandidates,
+      oreSurveyPending: observer?.oreSurveyPending,
+      forgetObserverOre: observer?.forgetOre,
     }),
       plan = strategy(a, memory)
     stopDefense = a.startDefense()
