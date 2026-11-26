@@ -41,7 +41,6 @@ final class ObserverSettingsScreen12111 extends Screen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float delta) {
-        renderBackground(gui, mouseX, mouseY, delta);
         super.render(gui, mouseX, mouseY, delta);
         int top = Math.max(44, (height - 110) / 2);
         gui.drawCenteredString(font, title, width / 2, top - 31, 0xFFFFFFFF);
