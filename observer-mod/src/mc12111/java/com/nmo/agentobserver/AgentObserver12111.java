@@ -4,11 +4,13 @@ import org.lwjgl.glfw.GLFW;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.player.LocalPlayer;
@@ -21,7 +23,6 @@ import com.nmo.agentobserver.ObserverSettings12111.Display;
 
 public final class AgentObserver12111 implements ClientModInitializer {
     private final ObserverSettings12111 settings = new ObserverSettings12111();
-    private boolean settingsKeyDown;
     private LocalPlayer nightVisionPlayer;
     private MobEffectInstance injectedNightVision;
 
@@ -32,8 +33,12 @@ public final class AgentObserver12111 implements ClientModInitializer {
         ObserverStructures12111 scanner = new ObserverStructures12111();
         scanner.register(settings);
         ObserverStructureOverlay12111 structures = new ObserverStructureOverlay12111(scanner, settings);
+        KeyMapping settingsKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.nmo-agent-observer.settings",
+            GLFW.GLFW_KEY_F7, KeyMapping.Category.register(Identifier.fromNamespaceAndPath("nmo-agent-observer", "observer"))));
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            updateSettingsKey(client);
+            while (settingsKey.consumeClick()) {
+                if (client.level != null && client.screen == null) client.setScreen(new ObserverSettingsScreen12111(settings));
+            }
             updateNightVision(client.player);
             structures.tick(client);
             ObserverHudLayout.updateDetailsKey(client.level != null && client.screen == null
@@ -57,16 +62,6 @@ public final class AgentObserver12111 implements ClientModInitializer {
             structures.close();
             path.close();
         });
-    }
-
-    private void updateSettingsKey(Minecraft client) {
-        boolean down = client.level != null && client.isWindowActive() &&
-            InputConstants.isKeyDown(client.getWindow(), GLFW.GLFW_KEY_F7);
-        if (down && !settingsKeyDown) {
-            if (client.screen == null) client.setScreen(new ObserverSettingsScreen12111(settings));
-            else if (client.screen instanceof ObserverSettingsScreen12111) client.setScreen(null);
-        }
-        settingsKeyDown = down;
     }
 
     private void updateNightVision(LocalPlayer player) {
