@@ -1,23 +1,21 @@
 const http = require('node:http')
 const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
-const { handleVillageLookup } = require('./village-locator')
+const { createStructureRoutes } = require('./structure-survey')
 const {
   VERSION, DASHBOARD_PORT, DEEPSEEK_API_KEY, DEEPSEEK_MODEL, LOG_NAMES, IRON_INPUT_NAMES,
 } = require('./config')
 
 function createDashboard(runtimeState, features) {
   let dashboardStarted = false
+  const structureRoute = createStructureRoutes()
 
   function startDashboard() {
     if (dashboardStarted) return
     dashboardStarted = true
     const page = readFileSync(join(__dirname, 'dashboard.html'))
     const server = http.createServer((req, res) => {
-      if (req.url === '/villages' && req.method === 'POST') {
-        void handleVillageLookup(req, res)
-        return
-      }
+      if (structureRoute(req, res)) return
       if (req.url === '/control' && req.method === 'POST') {
         let body = ''
         req.on('data', chunk => { body += chunk })
@@ -111,6 +109,10 @@ function createDashboard(runtimeState, features) {
           modelCalls: runtimeState.modelCalls,
           events: runtimeState.eventLog,
         }))
+        return
+      }
+      if (req.url !== '/' || req.method !== 'GET') {
+        res.writeHead(404).end()
         return
       }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })

@@ -11,6 +11,7 @@
     "test:creative-build": "node scripts/test-creative-build.js",
     "test:syntax": "node scripts/check-agent-syntax.js",
     "nmo:survival": "node agent/nmo-survival.js",
+    "observer:structures": "node agent/structure-survey.js",
     "test:nmo-survival": "node --test scripts/test-nmo-survival.js"
   },
   "keywords": [],

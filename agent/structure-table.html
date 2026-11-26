@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>旁观者结构发现表</title>
+<style>
+  :root { color-scheme: dark; font: 14px system-ui; background: #192a34; color: #e8f1f2; }
+  body { margin: 0; }
+  main { max-width: 1280px; margin: auto; padding: 14px; }
+  h1 { margin: 0 0 8px; font-size: 17px; }
+  p { color: #b2d1da; margin: 8px 0; }
+  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 12px 0; }
+  select, button { font: inherit; padding: 4px 8px; color: inherit; background: #101820; border: 1px solid #416271; border-radius: 4px; }
+  .scroll { overflow: auto; }
+  table { border-collapse: collapse; width: 100%; text-align: left; }
+  th, td { padding: 7px 8px; border-bottom: 1px solid #2e4a58; }
+  th, time { color: #b2d1da; }
+  td:nth-child(4) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  button { margin-left: 6px; cursor: pointer; }
+</style>
+<main>
+  <h1>旁观者结构发现表</h1>
+  <p>坐标是扫描到的地标，供进游戏复核。</p>
+  <div class="filters">
+    <label>世界 <select id="world"><option value="">全部</option></select></label>
+    <label>结构 <select id="type"><option value="">全部</option></select></label>
+    <span id="status" role="status">读取中…</span>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>世界</th><th>维度</th><th>结构</th><th>X / Y / Z</th><th>识别依据</th><th>发现时间</th></tr></thead>
+    <tbody id="entries"></tbody>
+  </table></div>
+</main>
+<script>
+  const world = document.querySelector('#world'), type = document.querySelector('#type');
+  const status = document.querySelector('#status'), table = document.querySelector('#entries');
+  const dimensions = {overworld:'主世界',the_nether:'下界',the_end:'末地'};
+  const clues = {
+    bell:'钟', bed:'床', workstation:'职业方块', blue_terracotta:'蓝色陶瓦',
+    orange_terracotta:'橙色陶瓦', sandstone:'砂岩', tnt:'TNT', mossy_cobblestone:'苔石',
+    dispenser:'发射器', tripwire_hook:'绊线钩', prismarine:'海晶石', dark_prismarine:'暗海晶石',
+    sea_lantern:'海晶灯', nether_bricks:'下界砖块', nether_brick_detail:'下界砖阶梯或栅栏',
+    gilded_blackstone:'镶金黑石', polished_blackstone_bricks:'磨制黑石砖',
+    purpur:'紫珀块', end_stone_bricks:'末地石砖',
+  };
+  let entries = [];
+  let signature = '';
+  function options(select, pairs) {
+    const current = select.value;
+    const values = [...new Map(pairs)].sort((a,b) => a[1].localeCompare(b[1],'zh'));
+    select.replaceChildren(new Option('全部',''), ...values.map(([id,label]) => new Option(label,id)));
+    if (values.some(([id]) => id === current)) select.value = current;
+  }
+  function render() {
+    const shown = entries.filter(entry => (!world.value || entry.world === world.value) && (!type.value || entry.type === type.value));
+    status.textContent = shown.length ? shown.length + ' 条记录' : '暂无匹配记录';
+    const rows = shown.map(entry => {
+      const row = document.createElement('tr');
+      const values = [entry.world, dimensions[entry.dimension] || entry.dimension, entry.label, entry.pos.join(' / '),
+        entry.evidence.map(clue => clues[clue] || clue).join('、'), new Date(entry.seenAt).toLocaleString('zh-CN')];
+      for (const value of values) row.insertCell().textContent = value;
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = '复制';
+      copy.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(entry.pos.join(' '));
+          status.textContent = '已复制 ' + entry.pos.join(' / ');
+        } catch { status.textContent = '剪贴板无法写入，可手动选中坐标复制'; }
+      });
+      row.cells[3].appendChild(copy);
+      return row;
+    });
+    table.replaceChildren(...rows);
+  }
+  async function refresh() {
+    try {
+      const response = await fetch('/api/structures');
+      if (!response.ok) throw Error();
+      const body = await response.text();
+      if (body === signature) return;
+      entries = JSON.parse(body).entries;
+      signature = body;
+      options(world, entries.map(entry => [entry.world,entry.world]));
+      options(type, entries.map(entry => [entry.type,entry.label]));
+      render();
+    } catch {
+      signature = '';
+      status.textContent = '暂时无法读取结构表';
+    }
+  }
+  world.addEventListener('change', render);
+  type.addEventListener('change', render);
+  refresh();
+  setInterval(refresh, 2500);
+</script>
+</html>

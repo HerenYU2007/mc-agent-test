@@ -23,6 +23,7 @@ public final class AgentObserver12111 implements ClientModInitializer {
     public void onInitializeClient() {
         ObserverTelemetry.start();
         new ObserverOres12111().register();
+        new ObserverStructures12111().register();
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player != null) applyNightVision(client.player);
             ObserverHudLayout.updateDetailsKey(client.level != null && client.screen == null

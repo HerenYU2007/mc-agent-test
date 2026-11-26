@@ -1,5 +1,6 @@
 const http = require('node:http')
 const { createOreFeed } = require('./nmo-observer-ores')
+const { createStructureRoutes } = require('./structure-survey')
 
 const STATUS_INTERVAL = 300
 const INVENTORY_INTERVAL = 950
@@ -131,7 +132,9 @@ async function startNmoObserver(api, initial, { port, log = console.log, modelEn
   if (!/^\d+$/.test(String(port)) || Number(port) > 65535) throw Error('MC_NMO_OBSERVER_PORT 需为 0–65535 的整数')
   const cache = createObserverCache(initial, { modelEnabled })
   const ores = createOreFeed(initial, cache.frame)
+  const structureRoute = createStructureRoutes()
   const server = http.createServer((request, response) => {
+    if (structureRoute(request, response)) return
     if (request.method === 'POST' && request.url === '/observer/ores') {
       void ores.handle(request, response)
       return

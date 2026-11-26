@@ -24,9 +24,13 @@ Windows 也可双击 `1-启动服务端.bat`、`2-启动Agent.bat`。要连接�
 
 打开 [本地监控面板](http://127.0.0.1:3001/) 查看实时状态。DeepSeek 默认关闭，启用时使用官方 `https://api.deepseek.com/chat/completions` 和 `deepseek-flash`。在本地 `.env` 或进程环境里设置 `DEEPSEEK_API_KEY`，再通过面板开启，或设置 `DEEPSEEK_AUTO_START=1`。暂停 Bot 会同时关闭模型。比赛环境如需使用统一代理，可按规则配置 `DEEPSEEK_URL` 和 `DEEPSEEK_MODEL`。
 
-面板里的「附近村庄」接收 **Java 1.21.11 默认主世界**的数字种子和基地 X/Z。已有基地坐标会自动填入，也可手动修改。查询按水平距离列出 12,288 格内最多 5 个候选，Bot 断开、模型关闭时也能用。生成器在本机运行。改过结构盐值、生成规则或沿用旧地图的服务器，结果需要进游戏核对。
+## 旁观者结构发现表
 
-村庄生成器随项目提供 WebAssembly 和 MIT 许可。需要重编译时，安装 Zig 0.15.2，将 [Cubiomes](https://github.com/Cubitect/cubiomes/pull/162) 源码检出到 `ca9fcb4e2b4f29a88b15a19fe1f00a73bf503ec2`，再运行 `node scripts/build-village-locator.cjs <Cubiomes 源码目录>`。
+在 1.21.11 Fabric 客户端安装新版旁观 Mod，以旁观模式跑图。客户端自动检查附近已加载的区块。按 F8 可开始或停止水平巡航，巡航时用鼠标转向。
+
+打开 [结构发现表](http://127.0.0.1:3001/structures) 查看世界、维度、X/Y/Z、识别依据和发现时间。当前识别村庄、沙漠神殿、丛林神庙、海底神殿、下界要塞、堡垒遗迹和末地城。识别依据是区块里的方块组合，坐标指向地标方块，同样的人工组合也可能形成候选。
+
+Bot 已运行时使用同一个面板端口。只跑旁观者时，运行 `npm run observer:structures` 即可单独启动结构表。表默认保存在用户目录下的 `.nmo-agent/observed-structures.jsonl`，可通过 `MC_STRUCTURE_FILE` 指定其他本地路径。单独调整结构表端口时，服务端使用 `MC_STRUCTURE_PORT`，客户端 JVM 使用 `-Dnmo.structure.port=端口`。群组服的后端世界共用同一地址时，给客户端加上 `-Dnmo.structure.world=后端名称`，便于按世界筛选记录。
 
 ## 遥测和原生旁观
 
@@ -39,7 +43,7 @@ Windows 也可双击 `1-启动服务端.bat`、`2-启动Agent.bat`。要连接�
 
     gradle -p observer-mod build
 
-将 `observer-mod/build/libs/nmo-agent-observer-0.2.1+1.21.11.jar` 和 Fabric API `0.141.6+1.21.11` 放进 Minecraft 1.21.11 的 Fabric 客户端 `mods` 目录，使用 Fabric Loader 0.19.5 或更高版本。Windows 也可用 `3-启动观察者客户端.bat` 启动 Gradle 的测试客户端。该脚本读取 `MC_CLIENT_SERVER`（默认 `127.0.0.1:25567`）和 `MC_OBSERVER_DASHBOARD_PORT`（默认 `3001`）。
+将 `observer-mod/build/libs/nmo-agent-observer-0.2.4+1.21.11.jar` 和 Fabric API `0.141.6+1.21.11` 放进 Minecraft 1.21.11 的 Fabric 客户端 `mods` 目录，使用 Fabric Loader 0.19.5 或更高版本。Windows 也可用 `3-启动观察者客户端.bat` 启动 Gradle 的测试客户端。该脚本读取 `MC_CLIENT_SERVER`（默认 `127.0.0.1:25567`）和 `MC_OBSERVER_DASHBOARD_PORT`（默认 `3001`）。
 
 服务器管理员可执行 `gamemode spectator NMOViewer` 和 `spectate NMO-TestAgent NMOViewer`。Mod 默认读取 `http://127.0.0.1:3001/observer`，不同端口通过客户端 JVM 参数 `-Dnmo.observer.port=端口` 设置。按 K 展开决策、实际操作、坐标和 Token 用量。底部透明 HUD 显示 27 格主背包、9 格快捷栏、护甲、副手、数量和耐久。1.21.11 的 3D 画面通过原生客户端查看，网页继续提供控制和状态面板。旁观 Mod 默认给客户端玩家维持原版无限夜视，并清除本地的黑暗和失明画面遮挡。重新进服或更换世界后会自动恢复。联机时效果由旁观客户端处理。
 

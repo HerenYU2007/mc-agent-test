@@ -1,88 +1,14 @@
 <!doctype html><meta charset="utf-8"><title>NMO Agent 实时监控</title>
   <style>body{margin:0;background:#101820;color:#e8f1f2;font:14px system-ui}main{max-width:1180px;margin:20px auto;padding:0 16px}h1{font-size:22px}.sub{color:#9fc3cc}.section{margin-top:16px}.panel{background:#192a34;border:1px solid #2e4a58;border-radius:10px;padding:14px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.card{background:#192a34;border:1px solid #2e4a58;border-radius:10px;padding:12px}.value{font-size:20px;font-weight:700;margin-top:6px;word-break:break-word}canvas{width:100%;height:300px;background:#16313c;border-radius:10px;margin-top:12px;image-rendering:pixelated}pre{white-space:pre-wrap;background:#0c1318;padding:12px;border-radius:10px;max-height:260px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px;border-bottom:1px solid #2e4a58;text-align:left;vertical-align:top}th{color:#9fc3cc}td.reason{max-width:420px;white-space:pre-wrap}.pill{display:inline-block;padding:2px 7px;border-radius:9px;background:#315765}.ok{color:#7ee787}.bad{color:#ff8a8a}@media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}table{font-size:12px}}</style>
   <main><h1>NMO Agent 实时监控</h1><div class="sub">DeepSeek 实时决策、寻路与战斗监控</div><div class="section panel"><button id="startBtn">启动 Bot</button> <button id="stopBtn">暂停 Bot</button> <span id="botStatus" class="pill">状态读取中…</span></div><div id="grid" class="grid section"></div><canvas id="map" width="900" height="300"></canvas>
-  <section class="section panel village-panel" aria-labelledby="village-heading">
-    <h2 id="village-heading">附近村庄</h2>
-    <p class="sub">Java 1.21.11 默认主世界 · 按距离显示最多 5 个候选位置</p>
-    <form id="village-form">
-      <label>世界种子 <input name="seed" type="text" maxlength="20" placeholder="例如 123456789" autocomplete="off" spellcheck="false" required></label>
-      <label>基地 X <input name="baseX" type="number" step="1" min="-29999984" max="29999984" required></label>
-      <label>基地 Z <input name="baseZ" type="number" step="1" min="-29999984" max="29999984" required></label>
-      <button type="submit">查找村庄</button>
-    </form>
-    <p id="village-status" role="status"></p>
-    <table id="village-results" hidden>
-      <thead><tr><th>X</th><th>Z</th><th>距基地</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
+  <section class="section panel"><iframe title="旁观者结构发现表" src="/structures" style="width:100%;height:340px;border:0"></iframe><a href="/structures" style="color:#b2d1da">打开完整结构表</a></section>
   <div class="section panel"><button id="modelBtn" disabled>读取 DeepSeek 状态…</button> <span id="modelStatus" class="pill" role="status"></span><h3>最近一次模型决策</h3><pre id="decision">连接中…</pre><h3>采矿指令与实际操作</h3><pre id="mineAudit">等待采矿指令…</pre><h3>最近经验总结</h3><pre id="experience">连接中…</pre></div>
   <div class="section panel"><h3>模型调用与 Token 用量</h3><div id="usage"></div><table><thead><tr><th>时间</th><th>触发</th><th>状态</th><th>动作</th><th>目标</th><th>原因 / 经验</th><th>输入</th><th>输出</th><th>总计</th><th>延迟</th></tr></thead><tbody id="modelCalls"></tbody></table></div>
   <div class="section panel"><h3>最近事件</h3><pre id="events">连接中…</pre></div></main>
-  <style>
-    .village-panel h2 { font-size: 17px; margin: 0; }
-    .village-panel p { margin: 7px 0 12px; }
-    #village-form { display: grid; grid-template-columns: minmax(200px, 2fr) repeat(2, minmax(86px, 1fr)) auto; gap: 10px; align-items: end; }
-    #village-form label { display: grid; gap: 5px; color: #c4dce2; }
-    #village-form input, #village-form button { box-sizing: border-box; font: inherit; border: 1px solid #416271; border-radius: 6px; padding: 8px 10px; }
-    #village-form input { width: 100%; min-width: 0; background: #101820; color: #e8f1f2; }
-    #village-form button { color: #e8f1f2; background: #315765; cursor: pointer; }
-    #village-form button:disabled { opacity: .65; cursor: wait; }
-    #village-status:empty { display: none; }
-    #village-results td { font-variant-numeric: tabular-nums; }
-    @media(max-width: 620px) { #village-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } #village-form label:first-child { grid-column: 1 / -1; } }
-  </style>
   <script>
   const grid=document.querySelector('#grid'), events=document.querySelector('#events'), decision=document.querySelector('#decision'), experience=document.querySelector('#experience'), usage=document.querySelector('#usage'), modelCalls=document.querySelector('#modelCalls'), canvas=document.querySelector('#map'), ctx=canvas.getContext('2d'), botStatus=document.querySelector('#botStatus');
   const mineAudit=document.querySelector('#mineAudit');
   const modelButton=document.querySelector('#modelBtn'), modelStatus=document.querySelector('#modelStatus');
-  const villageForm = document.querySelector('#village-form');
-  const villageStatus = document.querySelector('#village-status');
-  const villageResults = document.querySelector('#village-results');
-  let villageBaseFilled = false;
-  function fillVillageBase(state) {
-    if (villageBaseFilled) return;
-    const base = state.supplyBase?.position;
-    if (!Number.isInteger(base?.x) || !Number.isInteger(base?.z)) return;
-    for (const [name, value] of [['baseX', base.x], ['baseZ', base.z]]) {
-      const input = villageForm.elements.namedItem(name);
-      if (!input.value && input !== document.activeElement) input.value = value;
-    }
-    villageBaseFilled = true;
-  }
-  villageForm.addEventListener('submit', async event => {
-    event.preventDefault();
-    const button = villageForm.querySelector('button');
-    const values = new FormData(villageForm);
-    button.disabled = true;
-    villageStatus.className = 'sub';
-    villageStatus.textContent = '正在查找村庄…';
-    villageResults.hidden = true;
-    try {
-      const response = await fetch('/villages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ seed: values.get('seed'), baseX: Number(values.get('baseX')), baseZ: Number(values.get('baseZ')) }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw Error(result.error);
-      const rows = result.villages.map(village => {
-        const row = document.createElement('tr');
-        for (const value of [village.x, village.z, village.distance + ' 格']) row.insertCell().textContent = value;
-        return row;
-      });
-      villageResults.tBodies[0].replaceChildren(...rows);
-      villageResults.hidden = !rows.length;
-      villageStatus.textContent = rows.length
-        ? '基地 (' + result.base.x + ', ' + result.base.z + ') · ' + rows.length + ' 个候选村庄'
-        : result.radius.toLocaleString('zh-CN') + ' 格内没有查到候选村庄';
-    } catch (error) {
-      villageStatus.className = 'bad';
-      villageStatus.textContent = error.message || '查询失败';
-    } finally {
-      button.disabled = false;
-    }
-  });
   function drawModelStatus(state){
     modelButton.disabled=!state.modelConfigured;
     modelButton.textContent=state.modelEnabled?'关闭 DeepSeek':'开启 DeepSeek';
@@ -102,6 +28,6 @@
   function targetText(t){return t&&typeof t==='object'?JSON.stringify(t):fmt(t)}
   async function control(action){await fetch('/control',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});await tick();}
   document.querySelector('#startBtn').onclick=()=>control('start');document.querySelector('#stopBtn').onclick=()=>control('stop');
-  async function tick(){const r=await fetch('/state');const s=await r.json();const u=s.modelUsage||{};const cards=[['版本',s.version],['周期',s.cycle],['生命',s.health],['饥饿',s.food],['木材',s.logs],['背包空位',s.freeSlots],['夜间',s.night?'是':'否'],['镐 / 剑 / 盾',[(s.hasPickaxe?'✓':'—'),(s.hasSword?'✓':'—'),(s.hasShield?'✓':'—')].join(' / ')],['坐标',s.position?JSON.stringify(s.position):'—'],['路径目标',s.navigation&&s.navigation.target?JSON.stringify(s.navigation.target):'—'],['当前决策',s.decision],['模型',s.model||'script-only']];grid.innerHTML=cards.map(([k,v])=>'<div class="card">'+k+'<div class="value">'+fmt(v)+'</div></div>').join('');botStatus.textContent=s.botEnabled?(s.botConnected?'Bot 运行中':'Bot 重连中'):'Bot 已断开';botStatus.className=s.botEnabled?'pill ok':'pill bad';fillVillageBase(s);draw(s);drawMineAudit(s.mine);drawModelStatus(s);decision.textContent=JSON.stringify(s.lastModelDecision||{action:s.decision},null,2);experience.textContent=s.lastExperience||'暂无经验总结';usage.innerHTML='<span class="pill">请求 '+fmt(u.requests)+'</span> <span class="pill">输入 '+fmt(u.promptTokens)+'</span> <span class="pill">输出 '+fmt(u.completionTokens)+'</span> <span class="pill">累计 '+fmt(u.totalTokens)+'</span>';modelCalls.innerHTML=(s.modelCalls||[]).slice().reverse().map(c=>'<tr><td>'+fmt(c.time)+'</td><td>'+fmt(c.trigger)+'</td><td class="'+(c.status==='ok'?'ok':'bad')+'">'+fmt(c.status)+'</td><td>'+fmt(c.action)+'</td><td>'+targetText(c.target)+'</td><td class="reason">'+fmt(c.reason)+'<br><span class="sub">经验：'+fmt(c.experience)+'</span></td><td>'+fmt(c.promptTokens)+'</td><td>'+fmt(c.completionTokens)+'</td><td>'+fmt(c.totalTokens)+'</td><td>'+fmt(c.latencyMs)+' ms</td></tr>').join('');events.textContent=(s.events||[]).slice().reverse().map(e=>e.time+'  '+e.message+(e.data?' '+JSON.stringify(e.data):'')).join('\n');}
+  async function tick(){const r=await fetch('/state');const s=await r.json();const u=s.modelUsage||{};const cards=[['版本',s.version],['周期',s.cycle],['生命',s.health],['饥饿',s.food],['木材',s.logs],['背包空位',s.freeSlots],['夜间',s.night?'是':'否'],['镐 / 剑 / 盾',[(s.hasPickaxe?'✓':'—'),(s.hasSword?'✓':'—'),(s.hasShield?'✓':'—')].join(' / ')],['坐标',s.position?JSON.stringify(s.position):'—'],['路径目标',s.navigation&&s.navigation.target?JSON.stringify(s.navigation.target):'—'],['当前决策',s.decision],['模型',s.model||'script-only']];grid.innerHTML=cards.map(([k,v])=>'<div class="card">'+k+'<div class="value">'+fmt(v)+'</div></div>').join('');botStatus.textContent=s.botEnabled?(s.botConnected?'Bot 运行中':'Bot 重连中'):'Bot 已断开';botStatus.className=s.botEnabled?'pill ok':'pill bad';draw(s);drawMineAudit(s.mine);drawModelStatus(s);decision.textContent=JSON.stringify(s.lastModelDecision||{action:s.decision},null,2);experience.textContent=s.lastExperience||'暂无经验总结';usage.innerHTML='<span class="pill">请求 '+fmt(u.requests)+'</span> <span class="pill">输入 '+fmt(u.promptTokens)+'</span> <span class="pill">输出 '+fmt(u.completionTokens)+'</span> <span class="pill">累计 '+fmt(u.totalTokens)+'</span>';modelCalls.innerHTML=(s.modelCalls||[]).slice().reverse().map(c=>'<tr><td>'+fmt(c.time)+'</td><td>'+fmt(c.trigger)+'</td><td class="'+(c.status==='ok'?'ok':'bad')+'">'+fmt(c.status)+'</td><td>'+fmt(c.action)+'</td><td>'+targetText(c.target)+'</td><td class="reason">'+fmt(c.reason)+'<br><span class="sub">经验：'+fmt(c.experience)+'</span></td><td>'+fmt(c.promptTokens)+'</td><td>'+fmt(c.completionTokens)+'</td><td>'+fmt(c.totalTokens)+'</td><td>'+fmt(c.latencyMs)+' ms</td></tr>').join('');events.textContent=(s.events||[]).slice().reverse().map(e=>e.time+'  '+e.message+(e.data?' '+JSON.stringify(e.data):'')).join('\n');}
   tick();setInterval(tick,1000);
   </script>
