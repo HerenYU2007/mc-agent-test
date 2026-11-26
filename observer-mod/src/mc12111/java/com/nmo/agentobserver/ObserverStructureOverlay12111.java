@@ -31,6 +31,7 @@ import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import com.nmo.agentobserver.ObserverSettings12111.Display;
+import com.nmo.agentobserver.ObserverSettings12111.StructureMode;
 import org.slf4j.LoggerFactory;
 
 final class ObserverStructureOverlay12111 implements AutoCloseable {
@@ -139,16 +140,18 @@ final class ObserverStructureOverlay12111 implements AutoCloseable {
         rendered = visible;
         PoseStack.Pose pose = context.matrices().last();
         VertexConsumer lines = buffers.getBuffer(BOX_LINES);
-        boolean parts = settings.enabled(Display.STRUCTURE_PIECES);
+        boolean detailed = settings.structureMode() == StructureMode.DETAILED;
         int drawnPieces = 0;
         for (Outline outline : visible) {
             int color = color(outline.type());
-            drawBox(pose, lines, outline.bounds(), camera, color, 2.2F, outline.estimated());
-            if (!parts) continue;
+            if (!detailed || outline.pieces().isEmpty()) {
+                drawBox(pose, lines, outline.bounds(), camera, color, 2.2F, outline.estimated());
+                continue;
+            }
             for (AABB piece : outline.pieces()) {
                 if (drawnPieces >= MAX_PIECES) break;
-                if (!piece.equals(outline.bounds()) && piece.distanceToSqr(camera) <= DRAW_RANGE * DRAW_RANGE) {
-                    drawBox(pose, lines, piece, camera, 0xFFB1CFD0, 1.15F, false);
+                if (piece.distanceToSqr(camera) <= DRAW_RANGE * DRAW_RANGE) {
+                    drawBox(pose, lines, piece, camera, color, 1.4F, outline.estimated());
                     drawnPieces++;
                 }
             }
@@ -185,7 +188,7 @@ final class ObserverStructureOverlay12111 implements AutoCloseable {
         if (rendered.isEmpty()) return "";
         List<String> names = rendered.stream().map(outline -> label(outline.type())).distinct().limit(3).toList();
         return (rendered.getFirst().estimated() ? "结构范围 · 联机估算" : "结构范围 · 原版边界")
-            + " · " + String.join("、", names);
+            + " · " + settings.structureMode().label + " · " + String.join("、", names);
     }
 
     private static String label(String type) {

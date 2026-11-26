@@ -16,7 +16,6 @@ import org.slf4j.LoggerFactory;
 final class ObserverSettings12111 {
     enum Display {
         STRUCTURES("结构范围", true),
-        STRUCTURE_PIECES("结构部件范围（单人）", false),
         ROUTE("Bot 路线与目标", true),
         STATUS("Bot 状态与决策", true),
         INVENTORY("Bot 背包与装备", true),
@@ -34,9 +33,19 @@ final class ObserverSettings12111 {
         String key() { return name().toLowerCase(Locale.ROOT); }
     }
 
+    enum StructureMode {
+        OVERALL("整体大框"),
+        DETAILED("详细部件");
+
+        final String label;
+
+        StructureMode(String label) { this.label = label; }
+    }
+
     private static final org.slf4j.Logger LOG = LoggerFactory.getLogger("nmo-observer-settings");
     private final EnumMap<Display, Boolean> values = new EnumMap<>(Display.class);
     private final Path file;
+    private StructureMode structureMode = StructureMode.OVERALL;
 
     ObserverSettings12111() {
         this(FabricLoader.getInstance().getConfigDir().resolve("nmo-observer-display.json"));
@@ -54,6 +63,14 @@ final class ObserverSettings12111 {
                     values.put(display, value.getAsBoolean());
                 }
             }
+            var mode = json.get("structure_mode");
+            if (mode != null && mode.isJsonPrimitive() && mode.getAsJsonPrimitive().isString()) {
+                if (mode.getAsString().equals("detailed")) structureMode = StructureMode.DETAILED;
+            } else {
+                var legacy = json.get("structure_pieces");
+                if (legacy != null && legacy.isJsonPrimitive() && legacy.getAsJsonPrimitive().isBoolean()
+                    && legacy.getAsBoolean()) structureMode = StructureMode.DETAILED;
+            }
         } catch (IOException | RuntimeException error) {
             LOG.warn("无法读取旁观者显示设置", error);
         }
@@ -61,8 +78,19 @@ final class ObserverSettings12111 {
 
     boolean enabled(Display display) { return values.get(display); }
 
+    StructureMode structureMode() { return structureMode; }
+
+    boolean cycleStructureMode() {
+        structureMode = structureMode == StructureMode.OVERALL ? StructureMode.DETAILED : StructureMode.OVERALL;
+        return saveSetting();
+    }
+
     boolean toggle(Display display) {
         values.put(display, !enabled(display));
+        return saveSetting();
+    }
+
+    private boolean saveSetting() {
         try {
             save();
             return true;
@@ -75,6 +103,7 @@ final class ObserverSettings12111 {
     private void save() throws IOException {
         JsonObject json = new JsonObject();
         values.forEach((display, enabled) -> json.addProperty(display.key(), enabled));
+        json.addProperty("structure_mode", structureMode.name().toLowerCase(Locale.ROOT));
         Files.createDirectories(file.getParent());
         Path temp = Files.createTempFile(file.getParent(), "nmo-observer-display-", ".tmp");
         try {

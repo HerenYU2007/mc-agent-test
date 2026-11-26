@@ -21,10 +21,17 @@ final class ObserverSettingsScreen12111 extends Screen {
         int left = (width - widthPerButton * 2 - 8) / 2;
         int top = Math.max(44, (height - 110) / 2);
         Display[] displays = Display.values();
-        for (int index = 0; index < displays.length; index++) {
-            Display display = displays[index];
-            int x = left + (index % 2) * (widthPerButton + 8);
-            int y = top + (index / 2) * 24;
+        for (int slot = 0; slot <= displays.length; slot++) {
+            int x = left + (slot % 2) * (widthPerButton + 8);
+            int y = top + (slot / 2) * 24;
+            if (slot == 1) {
+                addRenderableWidget(Button.builder(modeLabel(), button -> {
+                    writeFailed = !settings.cycleStructureMode();
+                    button.setMessage(modeLabel());
+                }).bounds(x, y, widthPerButton, 20).build());
+                continue;
+            }
+            Display display = displays[slot == 0 ? 0 : slot - 1];
             addRenderableWidget(Button.builder(label(display), button -> {
                 writeFailed = !settings.toggle(display);
                 button.setMessage(label(display));
@@ -37,6 +44,10 @@ final class ObserverSettingsScreen12111 extends Screen {
 
     private Component label(Display display) {
         return Component.literal(display.label + " · " + (settings.enabled(display) ? "开启" : "关闭"));
+    }
+
+    private Component modeLabel() {
+        return Component.literal("结构细节 · " + settings.structureMode().label);
     }
 
     @Override

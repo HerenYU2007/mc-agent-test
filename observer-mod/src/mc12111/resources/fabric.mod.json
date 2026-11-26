@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "nmo-agent-observer",
-  "version": "0.2.5+1.21.11",
+  "version": "0.2.6+1.21.11",
   "name": "NMO Agent Observer",
   "description": "Configurable Agent telemetry, path and structure overlays for Minecraft Java 1.21.11.",
   "environment": "client",

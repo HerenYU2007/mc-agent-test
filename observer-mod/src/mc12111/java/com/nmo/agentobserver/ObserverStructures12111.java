@@ -59,7 +59,7 @@ final class ObserverStructures12111 {
     private record Report(String type, String world, String dimension, int[] pos, List<String> evidence) {}
     private record Upload(List<String> keys, CompletableFuture<Boolean> result) {}
     private record Rule(String type, String dimension, Clue anchor, Map<Clue, Integer> minimum) {}
-    private record Estimate(BlockPos anchor, ObserverStructureOverlay12111.Outline outline) {}
+    private record Estimate(BlockPos anchor, ObserverStructureOverlay12111.Outline outline, Map<Chunk, AABB> parts) {}
     private static final Clue[] CLUES = Clue.values();
     private static final List<Rule> RULES = List.of(
         new Rule("village", "overworld", Clue.BELL, Map.of(Clue.BELL, 1, Clue.BED, 2, Clue.WORKSTATION, 1)),
@@ -265,11 +265,12 @@ final class ObserverStructures12111 {
         Observation observation = cache.get(anchor);
         if (observation == null || observation.clues().isEmpty()) return;
         Map<Clue, Integer> nearby = new EnumMap<>(Clue.class);
-        List<Observation> neighbors = new ArrayList<>();
+        Map<Chunk, Observation> neighbors = new LinkedHashMap<>();
         for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
-            Observation next = cache.get(new Chunk(anchor.x() + dx, anchor.z() + dz));
+            Chunk chunk = new Chunk(anchor.x() + dx, anchor.z() + dz);
+            Observation next = cache.get(chunk);
             if (next != null && now - next.sampledAt() < RESCAN_MS * 2) {
-                neighbors.add(next);
+                neighbors.put(chunk, next);
                 next.clues().forEach((clue, evidence) -> nearby.merge(clue, evidence.count(), Integer::sum));
             }
         }
@@ -283,16 +284,23 @@ final class ObserverStructures12111 {
         }
     }
 
-    private void rememberOutline(Rule rule, BlockPos anchor, List<Observation> neighbors) {
+    private void rememberOutline(Rule rule, BlockPos anchor, Map<Chunk, Observation> neighbors) {
         AABB bounds = new AABB(anchor);
-        for (Observation neighbor : neighbors) {
+        Map<Chunk, AABB> parts = new LinkedHashMap<>();
+        for (var sample : neighbors.entrySet()) {
+            AABB part = null;
             for (Clue clue : rule.minimum().keySet()) {
                 if (clue == Clue.SANDSTONE || clue == Clue.MOSSY_COBBLESTONE) continue;
-                Evidence feature = neighbor.clues().get(clue);
+                Evidence feature = sample.getValue().clues().get(clue);
                 if (feature == null || Math.abs(feature.first().getY() - anchor.getY()) > 28) continue;
                 AABB b = feature.bounds();
-                bounds = bounds.minmax(new AABB(b.minX, Math.max(b.minY, anchor.getY() - 28), b.minZ,
-                    b.maxX, Math.min(b.maxY, anchor.getY() + 29), b.maxZ));
+                AABB clipped = new AABB(b.minX, Math.max(b.minY, anchor.getY() - 28), b.minZ,
+                    b.maxX, Math.min(b.maxY, anchor.getY() + 29), b.maxZ);
+                part = part == null ? clipped : part.minmax(clipped);
+            }
+            if (part != null) {
+                parts.put(sample.getKey(), part);
+                bounds = bounds.minmax(part);
             }
         }
         int pad = switch (rule.type()) {
@@ -307,12 +315,14 @@ final class ObserverStructures12111 {
             if (!previous.outline().type().equals(rule.type()) ||
                 Math.abs(pos.getY() - anchor.getY()) > 24 ||
                 Math.hypot(pos.getX() - anchor.getX(), pos.getZ() - anchor.getZ()) > 52) continue;
+            Map<Chunk, AABB> combined = new LinkedHashMap<>(previous.parts());
+            parts.forEach((chunk, piece) -> combined.merge(chunk, piece, AABB::minmax));
             entry.setValue(new Estimate(pos, new ObserverStructureOverlay12111.Outline(rule.type(),
-                previous.outline().bounds().minmax(bounds), List.of(), true)));
+                previous.outline().bounds().minmax(bounds), List.copyOf(combined.values()), true), combined));
             return;
         }
         estimates.put(rule.type() + '/' + anchor.asLong(),
-            new Estimate(anchor, new ObserverStructureOverlay12111.Outline(rule.type(), bounds, List.of(), true)));
+            new Estimate(anchor, new ObserverStructureOverlay12111.Outline(rule.type(), bounds, List.copyOf(parts.values()), true), parts));
     }
 
     List<ObserverStructureOverlay12111.Outline> outlines() {
