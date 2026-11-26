@@ -49,20 +49,25 @@ final class ObserverHudLayout {
     }
 
     static void drawHud(Surface gui, Font font, int width, int height, int aboveXp) {
+        drawHud(gui, font, width, height, aboveXp, true, true);
+    }
+
+    static void drawHud(Surface gui, Font font, int width, int height, int aboveXp, boolean status, boolean inventory) {
+        if (!status && !inventory) return;
         ObserverTelemetry.Snapshot snapshot = ObserverTelemetry.snapshot();
         ObserverFrame frame = snapshot.frame();
-        drawVitals(gui, font, frame, snapshot.delayed());
+        if (status) drawVitals(gui, font, frame, snapshot.delayed());
         if (frame.inventory() == null) return;
 
         int trayX = (width - TRAY_WIDTH) / 2;
         int trayY = aboveXp - BACKPACK_HEIGHT;
-        boolean backpackVisible = trayX >= 4 && trayY >= 79;
-        if (trayX >= 4 && aboveXp >= 86) {
+        boolean backpackVisible = inventory && trayX >= 4 && trayY >= 79;
+        if (inventory && trayX >= 4 && aboveXp >= 86) {
             updateStacks(frame.inventory());
             if (backpackVisible) drawInventory(gui, font, trayX, trayY, frame.inventoryFresh() && !snapshot.delayed());
             drawHotbar(gui, font, frame.inventory(), trayX, height - SLOT - 4);
         }
-        drawDecision(gui, font, frame, width, aboveXp, backpackVisible ? trayX + TRAY_WIDTH : -1, trayY);
+        if (status) drawDecision(gui, font, frame, width, aboveXp, backpackVisible ? trayX + TRAY_WIDTH : -1, trayY);
     }
 
     private static void drawVitals(Surface gui, Font font, ObserverFrame frame, boolean delayed) {

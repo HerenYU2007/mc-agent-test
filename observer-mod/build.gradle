@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.nmo'
-version = '0.2.4+1.21.11'
+version = '0.2.5+1.21.11'
 
 repositories {
     mavenCentral()

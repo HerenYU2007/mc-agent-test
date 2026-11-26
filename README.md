@@ -43,7 +43,11 @@ Bot 已运行时使用同一个面板端口。只跑旁观者时，运行 `npm r
 
     gradle -p observer-mod build
 
-将 `observer-mod/build/libs/nmo-agent-observer-0.2.4+1.21.11.jar` 和 Fabric API `0.141.6+1.21.11` 放进 Minecraft 1.21.11 的 Fabric 客户端 `mods` 目录，使用 Fabric Loader 0.19.5 或更高版本。Windows 也可用 `3-启动观察者客户端.bat` 启动 Gradle 的测试客户端。该脚本读取 `MC_CLIENT_SERVER`（默认 `127.0.0.1:25567`）和 `MC_OBSERVER_DASHBOARD_PORT`（默认 `3001`）。
+将 `observer-mod/build/libs/nmo-agent-observer-0.2.5+1.21.11.jar` 和 Fabric API `0.141.6+1.21.11` 放进 Minecraft 1.21.11 的 Fabric 客户端 `mods` 目录，使用 Fabric Loader 0.19.5 或更高版本。Windows 也可用 `3-启动观察者客户端.bat` 启动 Gradle 的测试客户端。该脚本读取 `MC_CLIENT_SERVER`（默认 `127.0.0.1:25567`）和 `MC_OBSERVER_DASHBOARD_PORT`（默认 `3001`）。
+
+游戏内按 F7 打开旁观者显示设置，可分别开关结构范围、单人结构部件、Bot 路线和目标、状态和决策、背包和装备、巡航和扫描提示以及客户端夜视。设置保存在客户端的 `config/nmo-observer-display.json`。
+
+旁观模式下，单人世界使用原版结构数据绘制实线范围，并可叠加部件范围。联机时根据客户端已加载区块中的结构方块绘制虚线估算范围，适用于结构发现表支持的类型。外框和部件分别控制的交互参考了 [MiniHUD 的结构显示实现](https://github.com/sakura-ryoko/minihud/blob/LTS/1.21.11/src/main/java/fi/dy/masa/minihud/renderer/OverlayRendererStructures.java)。
 
 服务器管理员可执行 `gamemode spectator NMOViewer` 和 `spectate NMO-TestAgent NMOViewer`。Mod 默认读取 `http://127.0.0.1:3001/observer`，不同端口通过客户端 JVM 参数 `-Dnmo.observer.port=端口` 设置。按 K 展开决策、实际操作、坐标和 Token 用量。底部透明 HUD 显示 27 格主背包、9 格快捷栏、护甲、副手、数量和耐久。1.21.11 的 3D 画面通过原生客户端查看，网页继续提供控制和状态面板。旁观 Mod 默认给客户端玩家维持原版无限夜视，并清除本地的黑暗和失明画面遮挡。重新进服或更换世界后会自动恢复。联机时效果由旁观客户端处理。
 

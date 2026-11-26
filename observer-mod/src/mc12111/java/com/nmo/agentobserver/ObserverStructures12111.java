@@ -33,6 +33,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.phys.AABB;
 import org.lwjgl.glfw.GLFW;
 
 final class ObserverStructures12111 {
@@ -53,11 +54,12 @@ final class ObserverStructures12111 {
     }
 
     private record Chunk(int x, int z) {}
-    private record Evidence(int count, BlockPos first) {}
+    private record Evidence(int count, BlockPos first, AABB bounds) {}
     private record Observation(Map<Clue, Evidence> clues, long sampledAt) {}
     private record Report(String type, String world, String dimension, int[] pos, List<String> evidence) {}
     private record Upload(List<String> keys, CompletableFuture<Boolean> result) {}
     private record Rule(String type, String dimension, Clue anchor, Map<Clue, Integer> minimum) {}
+    private record Estimate(BlockPos anchor, ObserverStructureOverlay12111.Outline outline) {}
     private static final Clue[] CLUES = Clue.values();
     private static final List<Rule> RULES = List.of(
         new Rule("village", "overworld", Clue.BELL, Map.of(Clue.BELL, 1, Clue.BED, 2, Clue.WORKSTATION, 1)),
@@ -78,12 +80,14 @@ final class ObserverStructures12111 {
     private final Map<Chunk, Observation> cache = new HashMap<>();
     private final Map<String, Report> outbox = new LinkedHashMap<>();
     private final Map<String, Long> seen = new HashMap<>();
+    private final Map<String, Estimate> estimates = new LinkedHashMap<>();
     private final ArrayDeque<Chunk> queue = new ArrayDeque<>();
     private ClientLevel level;
     private Chunk center;
     private Chunk scanning;
     private final int[] counts = new int[CLUES.length];
     private final BlockPos[] first = new BlockPos[CLUES.length];
+    private final int[][] extents = new int[CLUES.length][6];
     private int sectionIndex;
     private String world;
     private String dimension;
@@ -95,7 +99,7 @@ final class ObserverStructures12111 {
     private boolean f8Down;
     private int reported;
 
-    void register() {
+    void register(ObserverSettings12111 settings) {
         for (Block block : BuiltInRegistries.BLOCK) {
             if (block instanceof BedBlock) known.put(block, Clue.BED);
         }
@@ -122,7 +126,8 @@ final class ObserverStructures12111 {
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("nmo-observer-survey", "structures"), (gui, delta) -> {
             Minecraft mc = Minecraft.getInstance();
-            if (mc.player == null || !mc.player.isSpectator() || mc.options.hideGui || mc.screen != null) return;
+            if (!settings.enabled(ObserverSettings12111.Display.SCAN_INFO) ||
+                mc.player == null || !mc.player.isSpectator() || mc.options.hideGui || mc.screen != null) return;
             String status = flying ? "F8 停止巡航" : "F8 水平巡航";
             gui.drawString(mc.font, status + " · 结构上报 " + reported + (outbox.isEmpty() ? "" : " · 待发 " + outbox.size()),
                 6, gui.guiHeight() - 70, 0xFFAAEDDB, true);
@@ -164,6 +169,7 @@ final class ObserverStructures12111 {
             queue.clear();
             cache.clear();
             seen.clear();
+            estimates.clear();
             dimension = level.dimension().identifier().getPath();
             String label = System.getProperty("nmo.structure.world", "").trim();
             var server = mc.getCurrentServer();
@@ -195,7 +201,11 @@ final class ObserverStructures12111 {
                 Map<Clue, Evidence> found = new EnumMap<>(Clue.class);
                 for (Clue clue : CLUES) {
                     int i = clue.ordinal();
-                    if (counts[i] > 0) found.put(clue, new Evidence(counts[i], first[i]));
+                    if (counts[i] > 0) {
+                        int[] e = extents[i];
+                        found.put(clue, new Evidence(counts[i], first[i],
+                            new AABB(e[0], e[1], e[2], e[3] + 1, e[4] + 1, e[5] + 1)));
+                    }
                 }
                 cache.put(scanning, new Observation(found, now));
                 for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
@@ -213,6 +223,8 @@ final class ObserverStructures12111 {
         nextQueue = now + 1200L;
         queue.clear();
         cache.keySet().removeIf(p -> Math.abs(p.x() - center.x()) > CACHE_RADIUS || Math.abs(p.z() - center.z()) > CACHE_RADIUS);
+        estimates.values().removeIf(estimate -> Math.abs((estimate.anchor().getX() >> 4) - center.x()) > CACHE_RADIUS ||
+            Math.abs((estimate.anchor().getZ() >> 4) - center.z()) > CACHE_RADIUS);
         seen.values().removeIf(last -> now - last > RESCAN_MS * 4);
         List<Chunk> near = new ArrayList<>();
         for (int dz = -SEARCH_RADIUS; dz <= SEARCH_RADIUS; dz++) for (int dx = -SEARCH_RADIUS; dx <= SEARCH_RADIUS; dx++) {
@@ -231,7 +243,21 @@ final class ObserverStructures12111 {
             Clue clue = known.get(section.getBlockState(x, y, z).getBlock());
             if (clue == null) continue;
             int i = clue.ordinal();
-            if (counts[i]++ == 0) first[i] = new BlockPos(pos.getMinBlockX() + x, baseY + y, pos.getMinBlockZ() + z);
+            int bx = pos.getMinBlockX() + x, by = baseY + y, bz = pos.getMinBlockZ() + z;
+            int[] extent = extents[i];
+            if (counts[i]++ == 0) {
+                first[i] = new BlockPos(bx, by, bz);
+                extent[0] = extent[3] = bx;
+                extent[1] = extent[4] = by;
+                extent[2] = extent[5] = bz;
+            } else {
+                extent[0] = Math.min(extent[0], bx);
+                extent[1] = Math.min(extent[1], by);
+                extent[2] = Math.min(extent[2], bz);
+                extent[3] = Math.max(extent[3], bx);
+                extent[4] = Math.max(extent[4], by);
+                extent[5] = Math.max(extent[5], bz);
+            }
         }
     }
 
@@ -239,9 +265,11 @@ final class ObserverStructures12111 {
         Observation observation = cache.get(anchor);
         if (observation == null || observation.clues().isEmpty()) return;
         Map<Clue, Integer> nearby = new EnumMap<>(Clue.class);
+        List<Observation> neighbors = new ArrayList<>();
         for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
             Observation next = cache.get(new Chunk(anchor.x() + dx, anchor.z() + dz));
             if (next != null && now - next.sampledAt() < RESCAN_MS * 2) {
+                neighbors.add(next);
                 next.clues().forEach((clue, evidence) -> nearby.merge(clue, evidence.count(), Integer::sum));
             }
         }
@@ -250,8 +278,45 @@ final class ObserverStructures12111 {
             Evidence marker = observation.clues().get(rule.anchor());
             if (marker == null || rule.minimum().entrySet().stream()
                 .anyMatch(required -> nearby.getOrDefault(required.getKey(), 0) < required.getValue())) continue;
+            rememberOutline(rule, marker.first(), neighbors);
             found(rule, marker.first(), now);
         }
+    }
+
+    private void rememberOutline(Rule rule, BlockPos anchor, List<Observation> neighbors) {
+        AABB bounds = new AABB(anchor);
+        for (Observation neighbor : neighbors) {
+            for (Clue clue : rule.minimum().keySet()) {
+                if (clue == Clue.SANDSTONE || clue == Clue.MOSSY_COBBLESTONE) continue;
+                Evidence feature = neighbor.clues().get(clue);
+                if (feature == null || Math.abs(feature.first().getY() - anchor.getY()) > 28) continue;
+                AABB b = feature.bounds();
+                bounds = bounds.minmax(new AABB(b.minX, Math.max(b.minY, anchor.getY() - 28), b.minZ,
+                    b.maxX, Math.min(b.maxY, anchor.getY() + 29), b.maxZ));
+            }
+        }
+        int pad = switch (rule.type()) {
+            case "village", "desert_pyramid" -> 6;
+            case "jungle_temple" -> 4;
+            default -> 1;
+        };
+        bounds = bounds.inflate(pad, pad, pad);
+        for (var entry : estimates.entrySet()) {
+            Estimate previous = entry.getValue();
+            BlockPos pos = previous.anchor();
+            if (!previous.outline().type().equals(rule.type()) ||
+                Math.abs(pos.getY() - anchor.getY()) > 24 ||
+                Math.hypot(pos.getX() - anchor.getX(), pos.getZ() - anchor.getZ()) > 52) continue;
+            entry.setValue(new Estimate(pos, new ObserverStructureOverlay12111.Outline(rule.type(),
+                previous.outline().bounds().minmax(bounds), List.of(), true)));
+            return;
+        }
+        estimates.put(rule.type() + '/' + anchor.asLong(),
+            new Estimate(anchor, new ObserverStructureOverlay12111.Outline(rule.type(), bounds, List.of(), true)));
+    }
+
+    List<ObserverStructureOverlay12111.Outline> outlines() {
+        return estimates.values().stream().map(Estimate::outline).toList();
     }
 
     private void found(Rule rule, BlockPos pos, long now) {

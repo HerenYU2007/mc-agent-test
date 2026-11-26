@@ -51,11 +51,12 @@ final class ObserverOres12111 {
     private CompletableFuture<Boolean> delivery;
     private long retryAfter;
 
-    void register() {
+    void register(ObserverSettings12111 settings) {
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("nmo-observer-survey", "summary"), (gui, delta) -> {
             Minecraft mc = Minecraft.getInstance();
-            if (mc.level == null || mc.options.hideGui || mc.screen != null || label.isEmpty()) return;
+            if (!settings.enabled(ObserverSettings12111.Display.SCAN_INFO) ||
+                mc.level == null || mc.options.hideGui || mc.screen != null || label.isEmpty()) return;
             gui.drawString(mc.font, label, 6, gui.guiHeight() - 58, 0xFFAAEDDB, true);
         });
     }

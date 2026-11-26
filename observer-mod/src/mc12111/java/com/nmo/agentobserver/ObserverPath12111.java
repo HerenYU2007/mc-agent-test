@@ -81,17 +81,21 @@ final class ObserverPath12111 implements AutoCloseable {
     }
 
     private static void line(PoseStack.Pose pose, VertexConsumer lines, Vec3 from, Vec3 to, int color) {
+        line(pose, lines, from, to, color, WIDTH);
+    }
+
+    static void line(PoseStack.Pose pose, VertexConsumer lines, Vec3 from, Vec3 to, int color, float width) {
         Vec3 delta = to.subtract(from);
         if (delta.lengthSqr() < 1e-8) return;
         Vec3 direction = delta.normalize();
-        vertex(pose, lines, from, direction, color);
-        vertex(pose, lines, to, direction, color);
+        vertex(pose, lines, from, direction, color, width);
+        vertex(pose, lines, to, direction, color, width);
     }
 
-    private static void vertex(PoseStack.Pose pose, VertexConsumer lines, Vec3 point, Vec3 direction, int color) {
+    private static void vertex(PoseStack.Pose pose, VertexConsumer lines, Vec3 point, Vec3 direction, int color, float width) {
         lines.addVertex(pose, (float) point.x, (float) point.y, (float) point.z)
             .setColor(color).setNormal(pose, (float) direction.x, (float) direction.y, (float) direction.z)
-            .setLineWidth(WIDTH);
+            .setLineWidth(width);
     }
 
     @Override
