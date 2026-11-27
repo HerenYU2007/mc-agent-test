@@ -464,6 +464,8 @@ async function runStep(a, m, save, plan, log, expeditionStep) {
   for (const [slot, kind] of ARMOR_SLOTS) {
     const armorSlot = slot === 'torso' ? 'chest' : slot
     const worn = a.inventory.armor?.[armorSlot]?.name
+    if (armorSlot==='feet' && worn==='golden_boots' && (a.status.dimension==='the_nether' ||
+        m.nether?.goldBootsForNether && !m.nether.returning && !m.nether.completed)) continue
     const tiers = ['netherite', 'diamond', 'iron', 'chainmail', 'golden', 'leather']
     const better = tiers
       .map((t) => t + '_' + kind)

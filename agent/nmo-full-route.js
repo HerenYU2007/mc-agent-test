@@ -40,6 +40,65 @@ async function collect(a, names, radius = 48, pick = null) {
 async function craft(a, item, count = 1) {
   if (await a.station('crafting_table')) await a.craft(item, count)
 }
+async function prepareNetherBoots(a,m,save,log) {
+  if (a.inventory.armor?.feet?.name==='golden_boots') {
+    if (!m.nether.goldBootsForNether) {
+      m.nether.goldBootsForNether=true
+      save()
+      log('出发前已核实穿上金靴')
+    }
+    return null
+  }
+  if (a.count('golden_boots') || await a.takeStored?.('golden_boots',1)) {
+    await a.equip('golden_boots','feet')
+    await a.refresh()
+    if (a.inventory.armor?.feet?.name==='golden_boots') {
+      m.nether.goldBootsForNether=true
+      save()
+      log('出发前已核实穿上金靴')
+    }
+    return '穿上并核实下界用金靴'
+  }
+  if (a.count('gold_ingot')<4) await a.takeStored?.('gold_ingot',4)
+  const missing=4-a.count('gold_ingot')
+  if (missing<=0) {
+    await craft(a,'golden_boots')
+    return '制作下界用金靴'
+  }
+  const fromNuggets=Math.min(missing,Math.floor(a.count('gold_nugget')/9))
+  if (fromNuggets) {
+    await craft(a,'gold_ingot',fromNuggets)
+    return '把已有金粒合成金锭'
+  }
+  if (a.count('raw_gold')<missing) await a.takeStored?.('raw_gold',missing)
+  if (a.count('raw_gold')<missing) {
+    await a.gather('gold',{recoverDrops:true})
+    return '为下界金靴采集金矿'
+  }
+  if (a.here()[1]<m.anchor[1]-3) {
+    await climbBackForSupplies(a,m,save,log)
+    return '带粗金沿矿道返回地面'
+  }
+  const coal=a.count('coal') ? 'coal' : a.count('charcoal') ? 'charcoal' : null
+  const planks=a.inventory.items.filter(item=>item.name.endsWith('_planks'))
+    .sort((x,y)=>y.count-x.count)
+  const woodNeeded=Math.ceil(missing*2/3)
+  if (!coal && planks.reduce((total,item)=>total+item.count,0)<woodNeeded) {
+    if (!await a.takeStored?.('coal',1) && !await a.gather('coal',{nearby:true})) {
+      const ceiling=await Promise.all([2,3,4,5].map(y=>a.block(add(a.here(),[0,y,0]))))
+      if (ceiling.some(block=>dry.test(block.name))) {
+        await climbBackForSupplies(a,m,save,log)
+        return '沿矿道继续上地面取燃料'
+      }
+      await a.ensurePlanks(woodNeeded)
+    }
+    return '为整批粗金备足燃料'
+  }
+  const units=coal ? missing : Math.min(missing,Math.floor(planks[0].count*1.5))
+  await a.smelt('raw_gold',coal || planks[0].name,units)
+  return '熔炼制作金靴所需的金锭'
+}
+
 async function fillBucket(a, log) {
   const origin = a.here()
   for (const { pos } of await a.find(['water'],48,12)) {
@@ -352,6 +411,8 @@ async function overworld(a,m,save,context) {
   }
   const portalWork = await ruinedPortalStep(a,n,save,context,plan)
   if (portalWork) return portalWork
+  const goldBoots=await prepareNetherBoots(a,m,save,context.log)
+  if (goldBoots) return goldBoots
   await a.move(n.portal,0)
   await sleep(4200)
   return '通过下界门'

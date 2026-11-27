@@ -681,6 +681,7 @@ function actions(api, memory, save, log, chooseTarget, {
     const protectedStack = stack => stack.enchantments?.length || stack.custom_name || stack.name === held
     const obsolete = stack=>{
       const [material,type]=stack.name.split('_')
+      if (stack.name==='golden_boots' && memory.nether && !memory.nether.completed) return false
       // The HTTP drop action selects by item name, so only use it when every copy is unprotected.
       if (items.some(item => item.name === stack.name && protectedStack(item))) return false
       if (armorSlot[type]) {

@@ -858,3 +858,37 @@ test('赛事移动回执与服务器实际坐标不符时不宣告到达',async(
   })
   await assert.rejects(move([8,64,0],0),{code:'path_not_found'})
 })
+
+test('先用已有粗金做金靴，核实已穿着后才走进下界门', async () => {
+  const portal=[0,64,0], stock={raw_gold:4}, operations=[]
+  const m={anchor:portal,nether:{portal,entry:[8,58,15],table:[5,64,0],enchanted:true,
+    bedVerified:true,bedDoorClosed:true,ruinedPortal:{obtained:true}}}
+  const a={
+    status:{dimension:'overworld',health:20}, here:()=>portal,
+    inventory:{armor:{feet:{name:'diamond_boots'}},items:[{name:'birch_planks',count:1}]},
+    count:name=>stock[name] || 0, tool:()=> 'diamond_pickaxe', sum:()=>8, has:()=>true,
+    block:async pos=>({name:pos.join(',')===portal.join(',')?'nether_portal':'obsidian'}),
+    takeStored:async()=>false,
+    gather:async (kind,options)=>{
+      assert.equal(kind,'coal')
+      assert.deepEqual(options,{nearby:true})
+      operations.push(['gather',kind])
+      stock.coal=1
+      return true
+    },
+    smelt:async (...args)=>{operations.push(args);stock.gold_ingot=4},
+    station:async()=>true,
+    craft:async item=>{operations.push(item);stock[item]=1},
+    equip:async (item,slot)=>{operations.push([item,slot]);a.inventory.armor[slot]={name:item}},
+    refresh:async()=>{},
+    move:async pos=>{assert.deepEqual(pos,portal);throw Error('已尝试走进门')},
+  }
+  const step=()=>expeditionStep(a,m,()=>{},{env:{},log(){}})
+  assert.equal(await step(),'为整批粗金备足燃料')
+  assert.equal(await step(),'熔炼制作金靴所需的金锭')
+  assert.equal(await step(),'制作下界用金靴')
+  assert.equal(await step(),'穿上并核实下界用金靴')
+  assert.equal(m.nether.goldBootsForNether,true)
+  await assert.rejects(step,/已尝试走进门/)
+  assert.deepEqual(operations,[['gather','coal'],['raw_gold','coal',4],'golden_boots',['golden_boots','feet']])
+})
