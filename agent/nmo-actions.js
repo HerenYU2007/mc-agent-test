@@ -237,18 +237,24 @@ function actions(api, memory, save, log, chooseTarget, {
     if (!rise) return explore()
     const pick = tool('pickaxe')
     if (pick) await equip(pick)
-    for (let i = 0; i < 4; i++) {
-      const v = DELTAS[(direction + i) % 4],
-        next = add(start, [v[0], rise, v[2]])
+    const headings = DELTAS.map((_, i) => DELTAS[(direction + i) % DELTAS.length])
+    const canCut = b => AIR.has(b.name) ||
+      (SOFT.test(b.name) || STAIR_STONE.test(b.name) || isLeaf(b.name)) && b.diggable &&
+      (!b.name.endsWith('_ore') || b.harvest_tool_ok)
+    let unsupported = 0
+    for (const v of headings) {
+      const next = add(start, [v[0], rise, v[2]])
       const floor = await block(add(next, [0, -1, 0]))
-      if (AIR.has(floor.name) || DANGER.test(floor.name) || /sand$|gravel/.test(floor.name)) continue
+      if (AIR.has(floor.name)) {
+        unsupported++
+        continue
+      }
+      if (DANGER.test(floor.name) || /sand$|gravel/.test(floor.name)) continue
       const cells = [add(next, [0, 1, 0]), next]
       if (rise < 0) cells.unshift(add(next, [0, 2, 0]))
       if (rise > 0) cells.unshift(add(start, [0, 2, 0]))
       const queried = await Promise.all(cells.map(block))
-      if (queried.some((b) => !AIR.has(b.name) &&
-          (!(SOFT.test(b.name) || STAIR_STONE.test(b.name) || isLeaf(b.name)) || !b.diggable ||
-            (b.name.endsWith('_ore') && !b.harvest_tool_ok)))) continue
+      if (!queried.every(canCut)) continue
       const neighbors = await Promise.all(
         [...DELTAS,[0,1,0]].flatMap((off) => cells.map((p) => block(add(p, off)))),
       )
@@ -256,10 +262,48 @@ function actions(api, memory, save, log, chooseTarget, {
       try {
         for (const b of queried) if (!AIR.has(b.name)) await call('dig', { pos: b.pos, collect: false })
         await move(next, 0)
-        direction = (direction + i) % 4
+        direction = DELTAS.indexOf(v)
         return true
       } catch (e) {
         if (!recoverable.has(e.code)) throw e
+      }
+    }
+    if (rise < 0 && unsupported === headings.length && pick && status.dimension === 'overworld') {
+      const supported = async (pos, depth) => {
+        const floor = await block(add(pos, [0, -depth, 0]))
+        return retreatFloor(floor) && !/sand$|gravel|dripstone/.test(floor.name)
+      }
+      for (const heading of headings) {
+        const step = add(start, heading)
+        if (!await supported(step, 1)) continue
+        let connects = false
+        for (const span of [2, 3, 4]) {
+          const landing = add(start, heading.map(value => value * span))
+          if (await supported(landing, 2)) {
+            connects = true
+            break
+          }
+          if (!await supported(landing, 1)) break
+        }
+        if (!connects) continue
+        const cells = [add(step, [0, 1, 0]), step]
+        const wall = await Promise.all(cells.map(block))
+        if (!wall.every(canCut)) continue
+        const neighbors = await Promise.all([...DELTAS, [0, 1, 0]]
+          .flatMap(offset => cells.map(cell => block(add(cell, offset)))))
+        if (neighbors.some(b => DANGER.test(b.name) || /^(gravel|sand|red_sand|pointed_dripstone)$/.test(b.name))) continue
+        try {
+          for (const b of wall) {
+            if (AIR.has(b.name)) continue
+            const receipt = await call('dig', { pos: b.pos, collect: false, stop_on: ['hurt', 'death'] })
+            if (receipt.interrupted_by) return false
+          }
+          await move(step, 0)
+          direction = DELTAS.indexOf(heading)
+          return true
+        } catch (error) {
+          if (!recoverable.has(error.code) || error.code === 'movement_interrupted') throw error
+        }
       }
     }
     return explore()

@@ -842,6 +842,39 @@ test('采附近原木时用短程拾取，并以背包实际增加为准', async
   assert.equal(a.count('spruce_log'),1)
 })
 
+test('下挖遇到薄洞顶时先横移，保留原脚下的石层', async () => {
+  const state = { ready: true, alive: true, dimension: 'overworld', health: 20,
+    pos: [0.5, 29, 0.5], held: {name: 'iron_pickaxe'} }
+  const dug = new Set(), moves = []
+  const a = actions({ async call(name, body) {
+    if (name === 'status') return state
+    if (name === 'inventory') return { items: [{name: 'iron_pickaxe', count: 1}] }
+    if (name === 'equip') return {}
+    if (name === 'get_block') {
+      const [x, y, z] = body.pos
+      const open = dug.has(body.pos.join(',')) || x === 0 && z === 0 && y >= 29 ||
+        y <= 27 && !(x === 2 && z === 0 && y === 27)
+      return {pos: body.pos, name: open ? 'air' : 'stone', diggable: !open}
+    }
+    if (name === 'dig') {
+      dug.add(body.pos.join(','))
+      return {}
+    }
+    assert.equal(name, 'move_to')
+    moves.push(body.pos)
+    const [x, y, z] = body.pos
+    state.pos = [x + 0.5, y, z + 0.5]
+    return {pos: state.pos}
+  } }, {}, () => {}, () => {})
+  await a.refresh()
+  assert.equal(await a.stair(-53), true)
+  assert.deepEqual(moves, [[1, 29, 0]])
+  assert.equal(dug.has('1,28,0'), false)
+  await a.refresh()
+  assert.equal(await a.stair(-53), true)
+  assert.deepEqual(moves, [[1, 29, 0], [2, 28, 0]])
+})
+
 test('AIA 拒绝越界选择，HTTP 鉴权失败时不把响应正文写入日志', async () => {
   const { createNmoPlanner } = require('../agent/nmo-planner')
   const obs = { options: [{}, {}] },
