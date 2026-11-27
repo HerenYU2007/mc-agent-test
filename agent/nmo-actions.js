@@ -231,10 +231,10 @@ function actions(api, memory, save, log, chooseTarget, {
     }
     return false
   }
-  async function stair(targetY) {
+  async function stair(targetY, {exploreIfBlocked = true, openLanding = false} = {}) {
     const start = here(),
       rise = Math.sign(targetY - start[1])
-    if (!rise) return explore()
+    if (!rise) return exploreIfBlocked ? explore() : false
     const pick = tool('pickaxe')
     if (pick) await equip(pick)
     const headings = DELTAS.map((_, i) => DELTAS[(direction + i) % DELTAS.length])
@@ -251,6 +251,10 @@ function actions(api, memory, save, log, chooseTarget, {
       }
       if (DANGER.test(floor.name) || /sand$|gravel/.test(floor.name)) continue
       const cells = [add(next, [0, 1, 0]), next]
+      if (openLanding) {
+        const clearance = await Promise.all([1, 2].map(height => block(add(next, [0, height, 0]))))
+        if (!clearance.every(b => AIR.has(b.name))) continue
+      }
       if (rise < 0) cells.unshift(add(next, [0, 2, 0]))
       if (rise > 0) cells.unshift(add(start, [0, 2, 0]))
       const queried = await Promise.all(cells.map(block))
@@ -306,7 +310,7 @@ function actions(api, memory, save, log, chooseTarget, {
         }
       }
     }
-    return explore()
+    return exploreIfBlocked ? explore() : false
   }
 
   async function guardedDig(pos, collect) {
@@ -1114,7 +1118,12 @@ function actions(api, memory, save, log, chooseTarget, {
     }
     if (!exploreIfMissing) return false
     if (here()[1] < 60) await stair(76)
-    else await explore()
+    else if (!await explore()) {
+      await refresh()
+      if (status.dimension === 'overworld' && status.on_ground && !status.in_water && !status.in_lava) {
+        await stair(here()[1] + 1, {exploreIfBlocked: false, openLanding: true})
+      }
+    }
     return true
   }
 

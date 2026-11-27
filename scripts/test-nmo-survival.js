@@ -875,6 +875,36 @@ test('下挖遇到薄洞顶时先横移，保留原脚下的石层', async () =>
   assert.deepEqual(moves, [[1, 29, 0], [2, 28, 0]])
 })
 
+test('补给找不到步行路径时，在干燥低槽挖一格上行台阶', async () => {
+  const start = {ready: true, alive: true, dimension: 'overworld', health: 20, food: 16,
+    on_ground: true, pos: [0.5, 64, 0.5], held: {name: 'stone_pickaxe'}}
+  const dug = [], moved = []
+  const a = actions({async call(name, body) {
+    if (name === 'status') return start
+    if (name === 'inventory') return {items: [{name: 'stone_pickaxe', count: 1}]}
+    if (name === 'get_entities') return {entities: []}
+    if (name === 'find_blocks') return {blocks: []}
+    if (name === 'equip') return {}
+    if (name === 'get_block') {
+      const [x, y, z] = body.pos
+      const air = z === 0 && (x === 0 && y >= 64 || x === 1 && y >= 66)
+      return {pos: body.pos, name: air ? 'air' : 'stone', diggable: !air}
+    }
+    if (name === 'dig') {
+      dug.push(body.pos)
+      return {}
+    }
+    assert.equal(name, 'move_to')
+    moved.push(body.pos)
+    start.pos = [1.5, 65, 0.5]
+    return {pos: start.pos}
+  }}, {}, () => {}, () => {})
+  await a.refresh()
+  assert.equal(await a.food(), true)
+  assert.deepEqual(dug, [[1, 65, 0]])
+  assert.deepEqual(moved, [[1, 65, 0]])
+})
+
 test('AIA 拒绝越界选择，HTTP 鉴权失败时不把响应正文写入日志', async () => {
   const { createNmoPlanner } = require('../agent/nmo-planner')
   const obs = { options: [{}, {}] },
