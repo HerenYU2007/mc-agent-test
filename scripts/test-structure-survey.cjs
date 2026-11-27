@@ -11,6 +11,10 @@ const { startNmoObserver } = require('../agent/nmo-observer')
 const site = { type: 'village', world: 'demo/one', dimension: 'overworld', pos: [10, 64, 10], evidence: ['bell', 'bed', 'workstation'] }
 const fortress = { type: 'fortress', world: 'demo/one', dimension: 'the_nether', pos: [10, 64, 10],
   evidence: ['nether_bricks', 'nether_brick_detail'] }
+const trial = { ...site, type: 'trial_chambers', pos: [22, -24, -12],
+  evidence: ['trial_spawner', 'trial_tuff', 'copper_grate'] }
+const endPortal = { ...site, type: 'end_portal', pos: [-680, -23, 875],
+  evidence: ['end_portal_frame', 'complete_frame_ring'] }
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'nmo-structure-'))
@@ -49,9 +53,16 @@ test('HTTP 接收批次、拒绝跨维度或来自网页的上报，并提供持
   assert.equal((await send([{ ...site, dimension: 'the_end' }])).status, 400)
   assert.equal((await send([{ ...site, pos: [1, 64.5, 3] }])).status, 400)
   assert.equal((await send([{ ...site, evidence: ['bell', 'bell'] }])).status, 400)
-  assert.equal((await send([site])).status, 200)
+  assert.equal((await send([site, trial, endPortal,
+    { ...endPortal, type: 'stronghold', evidence: ['structure_start', 'structure_bounds'] },
+    { ...site, type: 'shipwreck', evidence: ['structure_start', 'structure_bounds'] },
+  ])).status, 200)
+  assert.equal((await send([{ ...endPortal, dimension: 'the_end' }])).status, 400)
+  assert.equal((await send([{ ...trial, pos: [23, -23, -14] }])).status, 200)
   const stored = await (await fetch(url + '/api/structures')).json()
-  assert.equal(stored.entries.length, 1)
+  assert.equal(stored.entries.length, 5)
+  assert(stored.entries.some(entry => entry.type === 'trial_chambers' && entry.label === '试炼密室'))
+  assert.deepEqual(stored.entries.find(entry => entry.type === 'end_portal').pos, endPortal.pos)
   assert.match(await (await fetch(url + '/structures')).text(), /旁观者结构发现表/)
   assert.equal((await fetch(url + '/villages', { method: 'POST' })).status, 404)
 })

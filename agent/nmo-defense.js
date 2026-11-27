@@ -5,12 +5,16 @@ const transparent = /^(air|cave_air|void_air|water|torch|wall_torch|short_grass|
 async function clearSight(call, from, to) {
   const length = Math.hypot(...to.map((v, i) => v - from[i]))
   const cells = new Map()
-  for (let k = 0.5; k < length - 0.35; k += 0.6) {
+  const origin = from.map(Math.floor).join(',')
+  const destination = to.map(Math.floor).join(',')
+  for (let k = 0.15; k < length; k += 0.3) {
     const point = from.map((v, i) => Math.floor(v + ((to[i] - v) * k) / length))
-    cells.set(point.join(','), point)
+    const key=point.join(',')
+    if(key!==origin && key!==destination) cells.set(key, point)
   }
   const blocks = await Promise.all([...cells.values()].map((pos) => call('get_block', { pos })))
-  return blocks.every((b) => transparent.test(b.name))
+  return blocks.every(b => transparent.test(b.name) ||
+    (b.properties?.open === true && /(?:door|gate)$/.test(b.name)))
 }
 
 function closingArrow(arrow, last, feet) {
@@ -174,4 +178,4 @@ function createDefense(call) {
     counterReady: () => Date.now() < counterUntil,
   }
 }
-module.exports = { createDefense }
+module.exports = { createDefense, clearSight }

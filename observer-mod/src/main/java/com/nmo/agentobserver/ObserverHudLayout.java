@@ -177,6 +177,7 @@ final class ObserverHudLayout {
         String target = name.isEmpty() && goal == null ? "目标 —" : "目标 " + (name.isEmpty() ? "" : ObserverTelemetry.blockNameZh(name) + " ")
             + (goal == null ? "" : goal.coordinates());
         if (frame.routeSource().equals("official-goal")) target += frame.trace().size() > 1 ? " · 实走" : " · 仅终点";
+        if (frame.routeSource().equals("official-path")) target += " · 规划路线";
         gui.text(font, fit(font, target, w - 12), x + 6, y + 17, GOOD);
         for (int i = 0; i < shownLines; i++) gui.text(font, lines.get(i), x + 6, y + 29 + i * 9, MUTED);
         int row = y + 29 + shownLines * 9;

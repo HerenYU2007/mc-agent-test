@@ -29,7 +29,7 @@ function createProgression(runtimeState, features) {
         return { name: 'find_iron', hint: '熔炼铁矿制作铁镐', allowed: new Set(['gear_up']), action: 'gear_up', targetName: 'iron' }
       }
       const totalWood = s.logs + Math.floor(s.planks / 4)
-      if (totalWood < WOOD_TARGET) {
+      if (!s.canCraftWoodenPick && totalWood < WOOD_TARGET) {
         return { name: 'gather_wood', hint: `缺乏木材制作工具，收集原木 (目标 ${WOOD_TARGET})`, allowed: new Set(isUnderground ? ['collect_wood', 'gear_up'] : ['collect_wood', 'explore']), action: 'collect_wood' }
       }
       return { name: 'wood_tools', hint: '原木转木板，4 木板做工作台，木镐必须先做，再做木剑和木斧', allowed: new Set(['gear_up', 'collect_wood', 'explore']), action: 'gear_up' }
@@ -47,8 +47,11 @@ function createProgression(runtimeState, features) {
         targetName: 'stone'
       }
     }
-    if (features.needsCoalForIron(s) || (s.coal === 0 && s.torches < 8 && !s.rawIron && s.hasIronPickaxe)) {
-      return { name: 'find_coal', hint: '先找煤矿，留煤炭供熔炉使用；火把数量不能替代燃料', allowed: new Set(isUnderground ? ['mine'] : ['mine', 'explore']), action: 'mine', targetName: 'coal' }
+    const stockingOpeningCoal = !s.hasIronPickaxe && !s.iron && s.coal + s.charcoal < (s.openingCoalTarget ?? 0)
+    if (stockingOpeningCoal || features.needsCoalForIron(s) || (s.coal === 0 && s.torches < 8 && !s.rawIron && s.hasIronPickaxe)) {
+      const hint = stockingOpeningCoal ? `开局先补到 ${s.openingCoalTarget} 个煤或木炭，用于熔炼和照明` :
+        '先找煤矿，留煤炭供熔炉使用；火把数量不能替代燃料'
+      return { name: 'find_coal', hint, allowed: new Set(isUnderground ? ['mine'] : ['mine', 'explore']), action: 'mine', targetName: 'coal' }
     }
     const upgrade = features.nextIronUpgrade()
     if (upgrade) {

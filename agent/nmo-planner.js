@@ -1,7 +1,7 @@
 // The model can choose an index. World actions and coordinates belong to the NMO executor.
 const ENDPOINT = 'https://api.nju-aia.com/v1/chat/completions'
 
-function createNmoPlanner(env, { log = console.log, signal, request = fetch, now = Date.now } = {}) {
+function createNmoPlanner(env, { log = console.log, signal, request = fetch, now = Date.now, onModel = () => {} } = {}) {
   if (!env.LLM_API_KEY) return null
   if (!env.LLM_MODEL?.trim()) throw Error('配置 AIA 时需要指定 LLM_MODEL')
   if (
@@ -46,6 +46,7 @@ function createNmoPlanner(env, { log = console.log, signal, request = fetch, now
       })
       if (!response.ok) throw Error('HTTP ' + response.status)
       const result = await response.json()
+      onModel({ usage: result.usage })
       const message = result.choices?.[0]?.message?.content
       const text = Array.isArray(message) ? message.map((p) => p.text || '').join('') : message
       const parsed = JSON.parse(
@@ -56,6 +57,7 @@ function createNmoPlanner(env, { log = console.log, signal, request = fetch, now
       const choice = parsed?.choice
       if (!Number.isSafeInteger(choice) || choice < 0 || choice >= observation.options.length)
         throw Error('候选编号无效')
+      onModel({ objective: observation.objective, option: observation.options[choice] })
       const used = result.usage?.total_tokens
       log(
         'AIA ' +

@@ -50,7 +50,8 @@ final class ObserverStructures12111 {
     private enum Clue {
         BELL, BED, WORKSTATION, BLUE_TERRACOTTA, ORANGE_TERRACOTTA, SANDSTONE, TNT, MOSSY_COBBLESTONE,
         DISPENSER, TRIPWIRE_HOOK, PRISMARINE, DARK_PRISMARINE, SEA_LANTERN, NETHER_BRICKS, NETHER_BRICK_DETAIL,
-        GILDED_BLACKSTONE, POLISHED_BLACKSTONE_BRICKS, PURPUR, END_STONE_BRICKS
+        GILDED_BLACKSTONE, POLISHED_BLACKSTONE_BRICKS, PURPUR, END_STONE_BRICKS, CRYING_OBSIDIAN, NETHERRACK,
+        TRIAL_SPAWNER, TRIAL_TUFF, COPPER_GRATE, REINFORCED_DEEPSLATE, SCULK, END_PORTAL_FRAME
     }
 
     private record Chunk(int x, int z) {}
@@ -69,6 +70,12 @@ final class ObserverStructures12111 {
             Map.of(Clue.DISPENSER, 2, Clue.MOSSY_COBBLESTONE, 24, Clue.TRIPWIRE_HOOK, 2)),
         new Rule("monument", "overworld", Clue.DARK_PRISMARINE,
             Map.of(Clue.DARK_PRISMARINE, 8, Clue.PRISMARINE, 32, Clue.SEA_LANTERN, 4)),
+        new Rule("ruined_portal", "overworld", Clue.CRYING_OBSIDIAN,
+            Map.of(Clue.CRYING_OBSIDIAN, 1, Clue.NETHERRACK, 6)),
+        new Rule("trial_chambers", "overworld", Clue.TRIAL_SPAWNER,
+            Map.of(Clue.TRIAL_SPAWNER, 1, Clue.TRIAL_TUFF, 16, Clue.COPPER_GRATE, 2)),
+        new Rule("ancient_city", "overworld", Clue.REINFORCED_DEEPSLATE,
+            Map.of(Clue.REINFORCED_DEEPSLATE, 4, Clue.SCULK, 8)),
         new Rule("fortress", "the_nether", Clue.NETHER_BRICKS,
             Map.of(Clue.NETHER_BRICKS, 80, Clue.NETHER_BRICK_DETAIL, 4)),
         new Rule("bastion", "the_nether", Clue.GILDED_BLACKSTONE,
@@ -123,6 +130,16 @@ final class ObserverStructures12111 {
         match(Clue.POLISHED_BLACKSTONE_BRICKS, Blocks.POLISHED_BLACKSTONE_BRICKS);
         match(Clue.PURPUR, Blocks.PURPUR_BLOCK, Blocks.PURPUR_PILLAR);
         match(Clue.END_STONE_BRICKS, Blocks.END_STONE_BRICKS);
+        match(Clue.CRYING_OBSIDIAN, Blocks.CRYING_OBSIDIAN);
+        match(Clue.NETHERRACK, Blocks.NETHERRACK);
+        match(Clue.TRIAL_SPAWNER, Blocks.TRIAL_SPAWNER);
+        match(Clue.TRIAL_TUFF, Blocks.TUFF_BRICKS, Blocks.CHISELED_TUFF_BRICKS, Blocks.TUFF_BRICK_STAIRS);
+        match(Clue.COPPER_GRATE, Blocks.COPPER_GRATE, Blocks.EXPOSED_COPPER_GRATE, Blocks.WEATHERED_COPPER_GRATE,
+            Blocks.OXIDIZED_COPPER_GRATE, Blocks.WAXED_COPPER_GRATE, Blocks.WAXED_EXPOSED_COPPER_GRATE,
+            Blocks.WAXED_WEATHERED_COPPER_GRATE, Blocks.WAXED_OXIDIZED_COPPER_GRATE);
+        match(Clue.REINFORCED_DEEPSLATE, Blocks.REINFORCED_DEEPSLATE);
+        match(Clue.SCULK, Blocks.SCULK, Blocks.SCULK_CATALYST, Blocks.SCULK_SHRIEKER);
+        match(Clue.END_PORTAL_FRAME, Blocks.END_PORTAL_FRAME);
         ClientTickEvents.END_CLIENT_TICK.register(this::tick);
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("nmo-observer-survey", "structures"), (gui, delta) -> {
             Minecraft mc = Minecraft.getInstance();
@@ -274,14 +291,49 @@ final class ObserverStructures12111 {
                 next.clues().forEach((clue, evidence) -> nearby.merge(clue, evidence.count(), Integer::sum));
             }
         }
+        Evidence frame = observation.clues().get(Clue.END_PORTAL_FRAME);
+        if ("overworld".equals(dimension) && frame != null) {
+            BlockPos portal = endPortalCenter(frame.first());
+            if (portal != null) {
+                AABB bounds = new AABB(portal.getX() - 2, portal.getY() - 1, portal.getZ() - 2,
+                    portal.getX() + 3, portal.getY() + 2, portal.getZ() + 3);
+                estimates.put("end_portal/" + portal.asLong(), new Estimate(portal,
+                    new ObserverStructureOverlay12111.Outline("end_portal", bounds, List.of(bounds), false), Map.of()));
+                found("end_portal", portal, List.of("end_portal_frame", "complete_frame_ring"), now);
+            }
+        }
+        if (Minecraft.getInstance().hasSingleplayerServer()) return;
         for (Rule rule : RULES) {
             if (!rule.dimension().equals(dimension)) continue;
             Evidence marker = observation.clues().get(rule.anchor());
             if (marker == null || rule.minimum().entrySet().stream()
                 .anyMatch(required -> nearby.getOrDefault(required.getKey(), 0) < required.getValue())) continue;
+            if (rule.anchor() == Clue.CRYING_OBSIDIAN && neighbors.values().stream()
+                .map(sample -> sample.clues().get(Clue.NETHERRACK))
+                .noneMatch(rock -> rock != null && rock.bounds().inflate(4).contains(
+                    marker.first().getX() + 0.5, marker.first().getY() + 0.5, marker.first().getZ() + 0.5))) continue;
             rememberOutline(rule, marker.first(), neighbors);
-            found(rule, marker.first(), now);
+            found(rule.type(), marker.first(), rule.minimum().keySet().stream().sorted()
+                .map(clue -> clue.name().toLowerCase(Locale.ROOT)).toList(), now);
         }
+    }
+
+    private BlockPos endPortalCenter(BlockPos frame) {
+        for (int dz = -2; dz <= 2; dz++) for (int dx = -2; dx <= 2; dx++) {
+            if (!(Math.abs(dx) == 2 && Math.abs(dz) <= 1 || Math.abs(dz) == 2 && Math.abs(dx) <= 1)) continue;
+            BlockPos center = frame.offset(dx, 0, dz);
+            boolean ring = true;
+            for (int i = -1; i <= 1 && ring; i++) {
+                ring = isFrame(center.offset(i, 0, -2)) && isFrame(center.offset(i, 0, 2)) &&
+                    isFrame(center.offset(-2, 0, i)) && isFrame(center.offset(2, 0, i));
+            }
+            if (ring) return center;
+        }
+        return null;
+    }
+
+    private boolean isFrame(BlockPos pos) {
+        return level.getBlockState(pos).is(Blocks.END_PORTAL_FRAME);
     }
 
     private void rememberOutline(Rule rule, BlockPos anchor, Map<Chunk, Observation> neighbors) {
@@ -290,7 +342,7 @@ final class ObserverStructures12111 {
         for (var sample : neighbors.entrySet()) {
             AABB part = null;
             for (Clue clue : rule.minimum().keySet()) {
-                if (clue == Clue.SANDSTONE || clue == Clue.MOSSY_COBBLESTONE) continue;
+                if (clue == Clue.SANDSTONE || clue == Clue.MOSSY_COBBLESTONE || clue == Clue.NETHERRACK) continue;
                 Evidence feature = sample.getValue().clues().get(clue);
                 if (feature == null || Math.abs(feature.first().getY() - anchor.getY()) > 28) continue;
                 AABB b = feature.bounds();
@@ -329,12 +381,19 @@ final class ObserverStructures12111 {
         return estimates.values().stream().map(Estimate::outline).toList();
     }
 
-    private void found(Rule rule, BlockPos pos, long now) {
-        String key = world + '\n' + dimension + '\n' + rule.type() + '\n' + pos.asLong();
+    void reportExact(List<ObserverStructureOverlay12111.Outline> outlines) {
+        if (level == null) return;
+        long now = System.currentTimeMillis();
+        for (var outline : outlines) {
+            var center = outline.bounds().getCenter();
+            found(outline.type(), BlockPos.containing(center), List.of("structure_start", "structure_bounds"), now);
+        }
+    }
+
+    private void found(String type, BlockPos pos, List<String> evidence, long now) {
+        String key = world + '\n' + dimension + '\n' + type + '\n' + pos.asLong();
         if (seen.put(key, now) == null) {
-            List<String> evidence = rule.minimum().keySet().stream().sorted()
-                .map(clue -> clue.name().toLowerCase(Locale.ROOT)).toList();
-            outbox.put(key, new Report(rule.type(), world, dimension, new int[]{pos.getX(), pos.getY(), pos.getZ()}, evidence));
+            outbox.put(key, new Report(type, world, dimension, new int[]{pos.getX(), pos.getY(), pos.getZ()}, evidence));
         }
     }
 

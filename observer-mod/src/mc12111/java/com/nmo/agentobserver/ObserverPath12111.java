@@ -16,6 +16,7 @@ import net.minecraft.world.phys.Vec3;
 final class ObserverPath12111 implements AutoCloseable {
     private static final int RED = 0xFFFF3030;
     private static final int TRACE = 0xFF3DBFC5;
+    private static final int MINE = 0xFFA3F6AE;
     private static final float WIDTH = 4.0F;
     private static final RenderPipeline PIPELINE = RenderPipelines.register(
         RenderPipeline.builder(RenderPipelines.LINES_SNIPPET)
@@ -32,9 +33,11 @@ final class ObserverPath12111 implements AutoCloseable {
         ObserverTelemetry.Snapshot snapshot = ObserverTelemetry.snapshot();
         ObserverFrame frame = snapshot.frame();
         ObserverFrame.Point position = frame.position();
-        ObserverFrame.Point target = frame.mineTarget() == null ? frame.target() : frame.mineTarget();
-        boolean drawTrace = !snapshot.delayed() && frame.trace().size() > 1;
-        if (position == null || position.y() == null || (frame.waypoints().isEmpty() && target == null && !drawTrace)) return;
+        ObserverFrame.Point target = frame.target();
+        ObserverFrame.Point mine = frame.mineTarget();
+        if (snapshot.delayed()) return;
+        boolean drawTrace = frame.waypoints().isEmpty() && frame.trace().size() > 1;
+        if (position == null || position.y() == null || (frame.waypoints().isEmpty() && target == null && mine == null && !drawTrace)) return;
         PoseStack matrices = context.matrices();
         Vec3 camera = context.worldState().cameraRenderState.pos;
         matrices.pushPose();
@@ -57,10 +60,12 @@ final class ObserverPath12111 implements AutoCloseable {
                     observed = next;
                 }
             }
+            Vec3 mineBox = mine == null ? null : blockOrigin(mine, previous.y);
             if (target != null) {
-                double y = target.y() == null ? Math.floor(previous.y) : target.y();
-                box(pose, lines, new Vec3(target.x(), y, target.z()));
+                Vec3 goalBox = blockOrigin(target, previous.y);
+                if (!goalBox.equals(mineBox)) box(pose, lines, goalBox, RED);
             }
+            if (mineBox != null) box(pose, lines, mineBox, MINE);
             buffers.endBatch(ROUTE);
         } finally {
             matrices.popPose();
@@ -71,12 +76,16 @@ final class ObserverPath12111 implements AutoCloseable {
         return new Vec3(point.x(), point.y() + 0.15, point.z());
     }
 
-    private static void box(PoseStack.Pose pose, VertexConsumer lines, Vec3 origin) {
+    private static Vec3 blockOrigin(ObserverFrame.Point point, double fallbackY) {
+        return new Vec3(Math.floor(point.x()), Math.floor(point.y() == null ? fallbackY : point.y()), Math.floor(point.z()));
+    }
+
+    private static void box(PoseStack.Pose pose, VertexConsumer lines, Vec3 origin, int color) {
         for (int corner = 0; corner < 8; corner++) {
             Vec3 point = origin.add(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
-            if ((corner & 1) == 0) line(pose, lines, point, point.add(1, 0, 0), RED);
-            if ((corner & 2) == 0) line(pose, lines, point, point.add(0, 1, 0), RED);
-            if ((corner & 4) == 0) line(pose, lines, point, point.add(0, 0, 1), RED);
+            if ((corner & 1) == 0) line(pose, lines, point, point.add(1, 0, 0), color);
+            if ((corner & 2) == 0) line(pose, lines, point, point.add(0, 1, 0), color);
+            if ((corner & 4) == 0) line(pose, lines, point, point.add(0, 0, 1), color);
         }
     }
 

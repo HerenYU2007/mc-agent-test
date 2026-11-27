@@ -8,8 +8,24 @@ const STRUCTURES = {
   desert_pyramid: { label: '沙漠神殿', dimension: 'overworld', mergeDistance: 32 },
   jungle_temple: { label: '丛林神庙', dimension: 'overworld', mergeDistance: 24 },
   monument: { label: '海底神殿', dimension: 'overworld', mergeDistance: 64 },
+  ruined_portal: { label: '主世界废弃传送门', dimension: 'overworld', mergeDistance: 20, resource: 'crying_obsidian' },
+  trial_chambers: { label: '试炼密室', dimension: 'overworld', mergeDistance: 80 },
+  ancient_city: { label: '远古城市', dimension: 'overworld', mergeDistance: 80 },
+  stronghold: { label: '要塞', dimension: 'overworld', mergeDistance: 80 },
+  end_portal: { label: '末地传送门', dimension: 'overworld', mergeDistance: 6 },
+  mineshaft: { label: '废弃矿井', dimension: 'overworld', mergeDistance: 64 },
+  mansion: { label: '林地府邸', dimension: 'overworld', mergeDistance: 80 },
+  shipwreck: { label: '沉船', dimension: 'overworld', mergeDistance: 20 },
+  ocean_ruin: { label: '海底废墟', dimension: 'overworld', mergeDistance: 16 },
+  buried_treasure: { label: '埋藏的宝藏', dimension: 'overworld', mergeDistance: 4 },
+  pillager_outpost: { label: '掠夺者前哨站', dimension: 'overworld', mergeDistance: 36 },
+  trail_ruins: { label: '古迹废墟', dimension: 'overworld', mergeDistance: 24 },
+  igloo: { label: '雪屋', dimension: 'overworld', mergeDistance: 20 },
+  swamp_hut: { label: '沼泽小屋', dimension: 'overworld', mergeDistance: 20 },
   fortress: { label: '下界要塞', dimension: 'the_nether', mergeDistance: 96 },
   bastion: { label: '堡垒遗迹', dimension: 'the_nether', mergeDistance: 64 },
+  ruined_portal_nether: { label: '下界废弃传送门', dimension: 'the_nether', mergeDistance: 20 },
+  nether_fossil: { label: '下界化石', dimension: 'the_nether', mergeDistance: 12 },
   end_city: { label: '末地城', dimension: 'the_end', mergeDistance: 64 },
 }
 const MAX_BATCH = 24
@@ -81,7 +97,8 @@ function createStructureStore({ file = process.env.MC_STRUCTURE_FILE || FILE, no
 
   function list() {
     refresh()
-    return records.map(record => ({ ...record, label: STRUCTURES[record.type].label }))
+    return records.map(record => ({ ...record, label: STRUCTURES[record.type].label,
+      resource: STRUCTURES[record.type].resource }))
       .sort((a, b) => b.seenAt - a.seenAt)
   }
   return { report, list }

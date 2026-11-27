@@ -41,7 +41,7 @@
     dispenser:'发射器', tripwire_hook:'绊线钩', prismarine:'海晶石', dark_prismarine:'暗海晶石',
     sea_lantern:'海晶灯', nether_bricks:'下界砖块', nether_brick_detail:'下界砖阶梯或栅栏',
     gilded_blackstone:'镶金黑石', polished_blackstone_bricks:'磨制黑石砖',
-    purpur:'紫珀块', end_stone_bricks:'末地石砖',
+    purpur:'紫珀块', end_stone_bricks:'末地石砖', crying_obsidian:'哭泣的黑曜石', netherrack:'下界岩',
   };
   let entries = [];
   let signature = '';
@@ -56,7 +56,8 @@
     status.textContent = shown.length ? shown.length + ' 条记录' : '暂无匹配记录';
     const rows = shown.map(entry => {
       const row = document.createElement('tr');
-      const values = [entry.world, dimensions[entry.dimension] || entry.dimension, entry.label, entry.pos.join(' / '),
+      const label = entry.resource ? entry.label + '（可采集' + (clues[entry.resource] || entry.resource) + '）' : entry.label;
+      const values = [entry.world, dimensions[entry.dimension] || entry.dimension, label, entry.pos.join(' / '),
         entry.evidence.map(clue => clues[clue] || clue).join('、'), new Date(entry.seenAt).toLocaleString('zh-CN')];
       for (const value of values) row.insertCell().textContent = value;
       const copy = document.createElement('button');

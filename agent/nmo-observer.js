@@ -8,6 +8,7 @@ const SAMPLE_TIMEOUT = 1800
 const MAX_AGE = 4000
 const TRACE_LENGTH = 8
 const TRACE_IDLE_LIMIT = 1500
+const MINE_TARGET_MAX_AGE = 42000
 
 function position(value) {
   if (!Array.isArray(value) || value.length < 3 || !value.slice(0, 3).every(Number.isFinite)) return null
@@ -44,25 +45,36 @@ function inventorySlots(inv) {
   }
 }
 
-function createObserverCache(initial, { now = Date.now, modelEnabled = false } = {}) {
-  const identity = [initial.username, initial.server, initial.dimension]
+function createObserverCache(initial, { now = Date.now, modelEnabled = false, tokenStart = 0 } = {}) {
+  const identity = [initial.username, initial.server]
+  let dimension = initial.dimension
   let status, inventory, statusAt, inventoryAt, inventoryAfter, movement
-  let stage = ''
+  let stage = '', route, decision, mineTarget, currentDig
+  let tokens = { total: tokenStart }
 
   function observeStatus(next, at = now()) {
     if (!next || at < (statusAt ?? -Infinity)) return
-    if ([next?.username, next?.server, next?.dimension].some((value, index) => value != null && value !== identity[index])) {
-      status = inventory = movement = undefined
+    if ([next?.username, next?.server].some((value, index) => value != null && value !== identity[index])) {
+      status = inventory = movement = route = mineTarget = currentDig = undefined
       statusAt = inventoryAfter = at
       return
     }
     if (!next.ready || next.alive === false || !position(next.pos)) return
+    if (dimension && next.dimension && dimension !== next.dimension) {
+      inventory = movement = route = mineTarget = currentDig = undefined
+      inventoryAfter = at
+    }
+    dimension = next.dimension ?? dimension
     if (status?.last_death?.t !== next.last_death?.t && next.last_death?.t != null) {
-      inventory = movement = undefined
+      inventory = movement = route = mineTarget = currentDig = undefined
       inventoryAfter = at
     }
     status = next
     statusAt = at
+    if (Object.hasOwn(next, 'observer_path')) {
+      const waypoints = (next.observer_path?.waypoints || []).map(position).filter(Boolean)
+      route = waypoints.length ? { waypoints, target: position(next.observer_path.end) } : undefined
+    }
     if (!movement || at < movement.startedAt) return
     const point = position(next.pos)
     const separation = other => Math.hypot(other.x - point.x, other.y - point.y, other.z - point.z)
@@ -98,6 +110,25 @@ function createObserverCache(initial, { now = Date.now, modelEnabled = false } =
     return () => { if (movement === move) movement = undefined }
   }
 
+  function setMineTarget(pos, name) {
+    const target = position(pos)
+    if (target) mineTarget = { point: {...target, name}, at: now() }
+  }
+
+  function clearMineTarget(pos) {
+    if (!mineTarget) return
+    const target = mineTarget.point
+    if (!pos || (target.x === pos[0] && target.y === pos[1] && target.z === pos[2])) mineTarget = undefined
+  }
+
+  function beginDig(body) {
+    const target = body?.collect === false ? null : targetOf(body)
+    if (!target || target.y == null) return () => {}
+    const current = { point: target }
+    currentDig = current
+    return () => { if (currentDig === current) currentDig = undefined }
+  }
+
   function frame() {
     if (!status || now() - statusAt > MAX_AGE) return { username: identity[0], connected: false }
     return {
@@ -113,24 +144,47 @@ function createObserverCache(initial, { now = Date.now, modelEnabled = false } =
       freeSlots: inventory?.empty_slots,
       shieldRaised: Boolean(status.blocking),
       modelEnabled,
+      modelAction: decision?.action,
+      modelReason: decision?.reason,
+      mineTarget: mineTarget && now() - mineTarget.at <= MINE_TARGET_MAX_AGE
+        ? mineTarget.point : currentDig?.point ?? null,
+      tokens,
       action: status.busy === 'move_to' ? '移动' : stage || status.busy || '等待',
       navigation: {
-        target: movement?.target ?? null,
-        waypoints: movement?.waypoints ?? [],
-        trace: movement && now() - movement.traceAt <= TRACE_IDLE_LIMIT ? movement.trace : [],
-        routeSource: movement?.planned ? 'planned' : movement ? 'official-goal' : '',
+        target: movement?.target ?? route?.target ?? null,
+        waypoints: route?.waypoints ?? movement?.waypoints ?? [],
+        trace: !route && movement && now() - movement.traceAt <= TRACE_IDLE_LIMIT ? movement.trace : [],
+        routeSource: route ? 'official-path' : movement?.planned ? 'planned' : movement ? 'official-goal' : '',
       },
       inventory: inventorySlots(inventory),
     }
   }
 
+  function observeModel({ objective, option, usage, plan }) {
+    if (usage) {
+      tokens = { input: usage.prompt_tokens, output: usage.completion_tokens,
+        total: tokens.total + (Number.isSafeInteger(usage.total_tokens) ? usage.total_tokens : 0) }
+    }
+    if (option === undefined && !plan) return
+    const directions = { '1,0,0': '向东', '-1,0,0': '向西', '0,0,1': '向南', '0,0,-1': '向北' }
+    const target = typeof option === 'string' ? option
+      : option?.name || directions[option?.direction?.join(',')] || option?.label || ''
+    const coordinates = Array.isArray(option?.pos) ? '（' + option.pos.join(' / ') + '）' : ''
+    decision = { action: objective, reason: plan || 'AIA 选择 ' + target + coordinates }
+  }
+
   observeStatus(initial)
-  return { observeStatus, observeInventory, beginMove, frame, setStage: next => { stage = next } }
+  return { observeStatus, observeInventory, observeModel, beginMove, beginDig, setMineTarget, clearMineTarget, frame,
+    setStage(next) {
+      stage = next
+      if (next === '应对附近危险') clearMineTarget()
+    },
+  }
 }
 
-async function startNmoObserver(api, initial, { port, log = console.log, modelEnabled = false }) {
+async function startNmoObserver(api, initial, { port, log = console.log, modelEnabled = false, tokenStart = 0 }) {
   if (!/^\d+$/.test(String(port)) || Number(port) > 65535) throw Error('MC_NMO_OBSERVER_PORT 需为 0–65535 的整数')
-  const cache = createObserverCache(initial, { modelEnabled })
+  const cache = createObserverCache(initial, { modelEnabled, tokenStart })
   const ores = createOreFeed(initial, cache.frame)
   const structureRoute = createStructureRoutes()
   const server = http.createServer((request, response) => {

@@ -71,7 +71,7 @@ final class ObserverStructureOverlay12111 implements AutoCloseable {
             pending = null;
             nextRead = 0;
         }
-        if (world == null || client.player == null || !client.player.isSpectator() || !settings.enabled(Display.STRUCTURES)) {
+        if (world == null || client.player == null || !client.player.isSpectator()) {
             rendered = List.of();
             return;
         }
@@ -79,6 +79,7 @@ final class ObserverStructureOverlay12111 implements AutoCloseable {
         if (server == null) return;
         if (pending != null && pending.isDone()) {
             exact = pending.getNow(List.of());
+            scanner.reportExact(exact);
             pending = null;
         }
         long now = System.nanoTime();
@@ -115,10 +116,23 @@ final class ObserverStructureOverlay12111 implements AutoCloseable {
         }
         return starts.stream().filter(start -> start != null && start.isValid()).map(start -> {
             var key = registry.getKey(start.getStructure());
-            String type = key == null ? "structure" : key.getPath();
-            return new Outline(type, box(start.getBoundingBox()),
+            if (key == null || !key.getNamespace().equals("minecraft")) return null;
+            return new Outline(reportType(key.getPath()), box(start.getBoundingBox()),
                 start.getPieces().stream().map(piece -> box(piece.getBoundingBox())).toList(), false);
-        }).toList();
+        }).filter(outline -> outline != null).toList();
+    }
+
+    private static String reportType(String type) {
+        if (type.startsWith("village_")) return "village";
+        if (type.startsWith("ruined_portal_") && !type.equals("ruined_portal_nether")) return "ruined_portal";
+        return switch (type) {
+            case "jungle_pyramid" -> "jungle_temple";
+            case "bastion_remnant" -> "bastion";
+            case "mineshaft_mesa" -> "mineshaft";
+            case "shipwreck_beached" -> "shipwreck";
+            case "ocean_ruin_cold", "ocean_ruin_warm" -> "ocean_ruin";
+            default -> type;
+        };
     }
 
     private static AABB box(BoundingBox source) {
@@ -131,7 +145,8 @@ final class ObserverStructureOverlay12111 implements AutoCloseable {
         if (client.level == null || client.player == null || !client.player.isSpectator() ||
             client.options.hideGui || !settings.enabled(Display.STRUCTURES)) return;
         Vec3 camera = context.worldState().cameraRenderState.pos;
-        List<Outline> known = client.hasSingleplayerServer() ? exact : scanner.outlines();
+        List<Outline> known = new ArrayList<>(exact);
+        known.addAll(scanner.outlines());
         List<Outline> visible = known.stream()
             .filter(outline -> outline.bounds().distanceToSqr(camera) <= DRAW_RANGE * DRAW_RANGE)
             .sorted(Comparator.comparingDouble(outline -> outline.bounds().distanceToSqr(camera)))
@@ -198,6 +213,22 @@ final class ObserverStructureOverlay12111 implements AutoCloseable {
             case "jungle_temple", "jungle_pyramid" -> "丛林神庙";
             case "monument" -> "海底神殿";
             case "fortress" -> "下界要塞";
+            case "ruined_portal" -> "废弃传送门";
+            case "ruined_portal_nether" -> "下界废弃传送门";
+            case "trial_chambers" -> "试炼密室";
+            case "ancient_city" -> "远古城市";
+            case "stronghold" -> "要塞";
+            case "end_portal" -> "末地传送门";
+            case "mineshaft" -> "废弃矿井";
+            case "mansion" -> "林地府邸";
+            case "shipwreck" -> "沉船";
+            case "ocean_ruin" -> "海底废墟";
+            case "buried_treasure" -> "埋藏的宝藏";
+            case "pillager_outpost" -> "掠夺者前哨站";
+            case "trail_ruins" -> "古迹废墟";
+            case "igloo" -> "雪屋";
+            case "swamp_hut" -> "沼泽小屋";
+            case "nether_fossil" -> "下界化石";
             case "bastion", "bastion_remnant" -> "堡垒遗迹";
             case "end_city" -> "末地城";
             default -> type.replace('_', ' ');
@@ -213,6 +244,8 @@ final class ObserverStructureOverlay12111 implements AutoCloseable {
             case "下界要塞" -> 0xFFFCA264;
             case "堡垒遗迹" -> 0xFFFFD677;
             case "末地城" -> 0xFFD1A0FF;
+            case "试炼密室" -> 0xFFE8A67D;
+            case "末地传送门" -> 0xFF8EE9E2;
             default -> 0xFFB6D9E5;
         };
     }
