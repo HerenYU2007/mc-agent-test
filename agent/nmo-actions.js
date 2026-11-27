@@ -355,7 +355,7 @@ function actions(api, memory, save, log, chooseTarget, {
   const lootRetry = new Map()
   let lastLootScan = 0
   const itemName = entity => (entity.item || '').replace(/x\d+$/, '').replace(/^minecraft:/, '')
-  async function recoverValuableDrops({target=null,names=['diamond','ancient_debris'],quick=false,shallow=false} = {}) {
+  async function recoverValuableDrops({target=null,names=['diamond','ancient_debris'],quick=false,shallow=false,preferStand=false} = {}) {
     if (status.in_lava || status.on_fire || status.health < 12) return false
     const at=Date.now()
     if (!target && at-lastLootScan<1200) return false
@@ -394,7 +394,8 @@ function actions(api, memory, save, log, chooseTarget, {
       }
       const collision=nearby[0]
       try {
-        if (collision.every((v,i)=>v===p[i])) {
+        if (preferStand) await call('move_to',{pos:collision,range:0.25,timeout:1600,stop_on:['hurt','death']})
+        else if (collision.every((v,i)=>v===p[i])) {
           try {
             await call('move_to',{entity_id:item.id,range:0.35,timeout:quick ? 1500 : 3800})
           } catch(e) {
@@ -605,6 +606,8 @@ function actions(api, memory, save, log, chooseTarget, {
         }
         const wood = kind === 'wood'
         const closeBy = dist(status.pos,center(b.pos)) <= 4.5
+        const ordinaryClose = !nearby && closeBy && (kind==='coal' || kind==='iron') &&
+          Math.abs(here()[1]-b.pos[1])<=1
         const drops = wood ? [...LOG_NAMES] : basicStone ? [...STONE_DROPS] :
           isOre ? [b.name,b.name === 'nether_gold_ore' ? 'gold_nugget' : ORE_DROPS[kind]] : []
         const hasDrop = name => drops.includes(name)
@@ -612,7 +615,7 @@ function actions(api, memory, save, log, chooseTarget, {
         const beforeLoot = drops.length ? sum(hasDrop) : 0
         if (basicStone) setMineTarget(b.pos, actual.name)
         const res = isOre || basicStone
-          ? await guardedDig(b.pos, !(basicStone && closeBy))
+          ? await guardedDig(b.pos, !((basicStone || ordinaryClose) && closeBy))
           : await call('dig', { pos: b.pos, collect: !(wood && closeBy), timeout: 8500 })
         clearMineTarget(b.pos)
         cooldown.set(key, Date.now() + 15000)
@@ -622,7 +625,8 @@ function actions(api, memory, save, log, chooseTarget, {
         if (drops.length) {
           for (let i = 0; i < 4 && sum(hasDrop) <= beforeLoot; i++) {
             if (i === 1 && (wood || basicStone || recoverDrops || kind==='diamond' || kind==='debris'))
-              await recoverValuableDrops({target:b.pos,names:drops,quick:wood||basicStone,shallow:basicStone})
+              await recoverValuableDrops({target:b.pos,names:drops,quick:wood||basicStone||ordinaryClose,
+                shallow:basicStone||ordinaryClose,preferStand:ordinaryClose})
             if (i === 2 && isOre && recoverDrops && sum(hasDrop) <= beforeLoot) await approachOreDrop(b.pos, drops)
             await new Promise(resolve => setTimeout(resolve, 250))
             await refresh()

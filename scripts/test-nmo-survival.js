@@ -509,11 +509,13 @@ test('主任务就近挖铁后会补捡安全位置上的粗铁', async () => {
       }
       if (name === 'get_entities') return {entities:body.types.includes('item') && dug && !collected ? [item] : []}
       if (name === 'dig') {
+        assert.equal(body.collect,false)
         dug = true
         return {gained:{}}
       }
       if (name === 'move_to') {
-        assert.equal(body.entity_id,item.id)
+        assert.deepEqual(body.pos,ore)
+        assert.equal(body.timeout,1600)
         collected = true
         state.pos = item.pos
         return {pos:state.pos}
@@ -523,7 +525,7 @@ test('主任务就近挖铁后会补捡安全位置上的粗铁', async () => {
   }
   const a = actions(api,{},() => {},() => {})
   await a.refresh()
-  assert.equal(await a.gatherNearby('iron',{recoverDrops:true}),true)
+  assert.equal(await a.gather('iron'),true)
   assert.equal(a.count('raw_iron'),1)
 })
 
