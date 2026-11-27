@@ -487,6 +487,35 @@ test('采铁先处理近处安全矿点，旁观上报的远点排在后面', as
   assert.deepEqual(digs, [dry])
 })
 
+test('低洼熔炉缺燃料时保留原料，并在无路径后先挖台阶', async () => {
+  const pocket=[-109,67,-12], furnace=[-111,67,-12]
+  const f=scenario({diamond_pickaxe:1,diamond_sword:1})
+  Object.assign(f.a.status,{dimension:'overworld',pos:pocket,on_ground:true})
+  Object.assign(f.m,{unlocked:true,anchor:[-23,68,15],hut:{complete:true},furnace,furnaceLoaded:true})
+  f.a.inventory.offhand={name:'shield'}
+  f.a.has=name=>name==='shield' || f.a.count(name)>0
+  f.a.here=()=>f.a.status.pos
+  f.a.block=async()=>({name:'furnace'})
+  f.a.call=async (name,body)=>{
+    assert.equal(name,'window/view')
+    assert.deepEqual(body.target.pos,furnace)
+    return {sections:{input:[{name:'porkchop',count:4}],fuel:[],output:[]},info:{burning:false}}
+  }
+  f.a.stair=async (y,options)=>{
+    assert.equal(y,68)
+    assert.deepEqual(options,{exploreIfBlocked:false})
+    f.a.status.pos=[-110,68,-12]
+    return true
+  }
+  assert.equal(await f.next(),'补充炉用燃料')
+  assert.equal(f.m.furnaceFuelNeeded,4)
+  assert.equal(await f.next(),'先补足燃料再回熔炉')
+  assert.deepEqual(f.m.furnaceFuelStuck,pocket)
+  assert.equal(await f.next(),'从低洼熔炉站位挖台阶上地面取燃料')
+  assert.deepEqual(f.operations,[['gather','wood']])
+  assert.deepEqual(f.m.furnace,furnace)
+})
+
 test('主任务就近挖铁后会补捡安全位置上的粗铁', async () => {
   const ore = [1,64,0]
   const item = {id:7,name:'item',item:'raw_ironx1',pos:[1.5,64,0.5]}

@@ -509,6 +509,28 @@ async function runStep(a, m, save, plan, log, expeditionStep) {
   }
   const sitePlank = a.inventory.items.find(item=>item.name.endsWith('_planks'))
   const fuel = a.count('coal') ? 'coal' : a.count('charcoal') ? 'charcoal' : sitePlank?.name
+  if (m.furnace && m.furnaceFuelNeeded && !fuel) {
+    if (a.sum(name=>LOG_NAMES.has(name))) await a.ensurePlanks(Math.ceil(m.furnaceFuelNeeded*2/3))
+    else if (m.hut?.complete && m.anchor && a.here()[1]>=m.anchor[1]-7 && !a.status.in_water) {
+      const start=a.here()
+      if (m.furnaceFuelStuck && dist(start,m.furnaceFuelStuck)<=4 && start[1]<m.furnace[1]+3 &&
+          await a.stair(start[1]+1,{exploreIfBlocked:false}))
+        return '从低洼熔炉站位挖台阶上地面取燃料'
+      await a.gather('wood')
+      await a.refresh()
+      const stuck=dist(a.here(),start)<1.2 && !a.sum(name=>LOG_NAMES.has(name) || name.endsWith('_planks'))
+      if (stuck || m.furnaceFuelStuck) {
+        m.furnaceFuelStuck=stuck?start:undefined
+        save()
+      }
+    } else await a.gather('coal')
+    return '先补足燃料再回熔炉'
+  }
+  if (m.furnaceFuelNeeded) {
+    delete m.furnaceFuelNeeded
+    delete m.furnaceFuelStuck
+    save()
+  }
   if (m.furnace) {
     const target = { pos: m.furnace }
     let view
@@ -530,8 +552,8 @@ async function runStep(a, m, save, plan, log, expeditionStep) {
       return '改换空熔炉站位'
     }
     if (view.sections.input.length && !view.info.burning && !view.sections.fuel.length && !fuel) {
-      if (a.sum(n=>LOG_NAMES.has(n))) await a.ensurePlanks(1)
-      else await a.gather('coal')
+      m.furnaceFuelNeeded=view.sections.input.reduce((total,item)=>total+item.count,0)
+      save()
       return '补充炉用燃料'
     }
     if (view.info.burning && view.sections.input.length && !view.sections.output.length) {
