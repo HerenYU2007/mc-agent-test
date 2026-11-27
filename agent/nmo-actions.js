@@ -7,6 +7,10 @@ const { LOG_NAMES, STONE_TARGETS, STONE_DROPS, RUBBLE } = require('./config')
 const blocksByName = require('minecraft-data')('1.21.11').blocksByName
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const DANGER = /water|lava|bubble_column|magma|campfire|cactus|powder_snow|fire$/
+const retreatSpace = ({name,properties}) => blocksByName[name]?.boundingBox === 'empty' &&
+  !DANGER.test(name) && !/cobweb|berry_bush|pointed_dripstone/.test(name) && String(properties?.waterlogged) !== 'true'
+const retreatFloor = ({name,properties}) => blocksByName[name]?.boundingBox === 'block' &&
+  !DANGER.test(name) && String(properties?.waterlogged) !== 'true'
 const SOFT = /^(dirt|grass_block|gravel|andesite|diorite|granite|tuff|stone|deepslate|netherrack|sandstone)$/
 const isLeaf = name => name.endsWith('_leaves')
 const STAIR_STONE = /^(?:calcite|cobblestone|cobbled_deepslate|(?:deepslate_)?(?:iron|coal|copper|gold|redstone|lapis|emerald|diamond)_ore)$/
@@ -1348,6 +1352,7 @@ function actions(api, memory, save, log, chooseTarget, {
   }
 
   async function safety({recovering=false}={}) {
+    if (await require('./nmo-wall-escape').escapeWall(call,block,status,retreatFloor,retreatSpace)) return true
     if (status.submerged && status.oxygen < 12) {
       await call('posture', { jump: true })
       return true
