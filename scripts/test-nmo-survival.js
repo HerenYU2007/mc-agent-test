@@ -777,6 +777,7 @@ test('AIA 选择会改变实际 NMO 挖掘目标，单次预算不会产生第�
     async call(name, body) {
       if (name === 'status') return state
       if (name === 'inventory') return { items: [{name:'oak_log',count:digs.length}], armor: {} }
+      if (name === 'get_entities') return { entities: [] }
       if (name === 'find_blocks') return { blocks }
       if (name === 'get_block') return { name: 'oak_log' }
       if (name === 'dig') {
@@ -836,8 +837,8 @@ test('采附近原木时用短程拾取，并以背包实际增加为准', async
   await a.refresh()
   assert.equal(await a.gather('wood'),true)
   assert.equal(calls[0][1].collect,false)
-  assert.equal(calls[1][1].entity_id,dropped.id)
-  assert.equal(calls[1][1].timeout,1500)
+  assert.deepEqual(calls[1][1].pos,logPos)
+  assert.equal(calls[1][1].timeout,1600)
   assert.equal(a.count('spruce_log'),1)
 })
 

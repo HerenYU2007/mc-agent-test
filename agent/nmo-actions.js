@@ -365,7 +365,7 @@ function actions(api, memory, save, log, chooseTarget, {
     if (!target && at-lastLootScan<1200) return false
     if (!target) lastLootScan=at
     for (const [id,expiry] of lootRetry) if (expiry<=at) lootRetry.delete(id)
-    const {entities}=await call('get_entities',{types:['item'],radius:shallow?6:target?16:32})
+    const {entities}=await call('get_entities',{types:['item'],radius:shallow?6:target?16:quick?8:32})
     const items=entities.filter(item=>names.includes(itemName(item)) && !lootRetry.has(item.id) &&
       (!target || dist(item.pos,center(target))<=6)).slice(0,quick ? 2 : 4)
     if (!items.length) return false
@@ -458,6 +458,8 @@ function actions(api, memory, save, log, chooseTarget, {
 
   let missedStone
   async function gather(kind, { nearby = false, recoverDrops = !nearby, within } = {}) {
+    if (kind==='wood' && recoverDrops && !nearby &&
+        await recoverValuableDrops({names:[...LOG_NAMES],quick:true,preferStand:true})) return true
     const targetNames = ORES[kind],
       before = here(),
       selected = tool(kind === 'wood' ? 'axe' : 'pickaxe')
@@ -620,7 +622,7 @@ function actions(api, memory, save, log, chooseTarget, {
         if (basicStone) setMineTarget(b.pos, actual.name)
         const res = isOre || basicStone
           ? await guardedDig(b.pos, !((basicStone || ordinaryClose) && closeBy))
-          : await call('dig', { pos: b.pos, collect: !(wood && closeBy), timeout: 8500 })
+          : await call('dig', { pos: b.pos, collect: !wood, timeout: 8500 })
         clearMineTarget(b.pos)
         cooldown.set(key, Date.now() + 15000)
         if (res.interrupted_by) return false
@@ -630,7 +632,7 @@ function actions(api, memory, save, log, chooseTarget, {
           for (let i = 0; i < 4 && sum(hasDrop) <= beforeLoot; i++) {
             if (i === 1 && (wood || basicStone || recoverDrops || kind==='diamond' || kind==='debris'))
               await recoverValuableDrops({target:b.pos,names:drops,quick:wood||basicStone||ordinaryClose,
-                shallow:basicStone||ordinaryClose,preferStand:ordinaryClose})
+                shallow:basicStone||ordinaryClose,preferStand:wood||ordinaryClose})
             if (i === 2 && isOre && recoverDrops && sum(hasDrop) <= beforeLoot) await approachOreDrop(b.pos, drops)
             await new Promise(resolve => setTimeout(resolve, 250))
             await refresh()
