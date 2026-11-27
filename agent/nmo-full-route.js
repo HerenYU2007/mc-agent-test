@@ -462,7 +462,7 @@ async function trialChamberStep(a,m,save,context) {
     target = n.trialChamber = selected
     save()
   }
-  const completed = await a.call('advancements', {status:'completed',include_recipes:false,ids:[TRIAL_ADVANCEMENT]})
+  const completed = await a.call('advancements', {status:'completed',include_recipes:false,ids:['minecraft:'+TRIAL_ADVANCEMENT]})
   if (completed.advancements.some(item => item.id.replace(/^minecraft:/,'') === TRIAL_ADVANCEMENT)) {
     n.trialAchievement = true
     n.trialReturning = true

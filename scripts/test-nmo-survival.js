@@ -123,7 +123,7 @@ test('后期试炼密室以服务器实际成就为准，随后从已记录站�
   assert.equal(m.nether.trialAchievement, true)
   assert.equal(m.nether.trialChamber, undefined)
   assert.equal(await expeditionStep(a,m,() => {},context), '试炼密室侦察后返回基地')
-  assert.deepEqual(operations, [['advancements',['adventure/minecraft_trials_edition']],['move',[0,64,0],4]])
+  assert.deepEqual(operations, [['advancements',['minecraft:adventure/minecraft_trials_edition']],['move',[0,64,0],4]])
 })
 
 test('工坊合成前背包已满时回储物桶存一组石料', async () => {
